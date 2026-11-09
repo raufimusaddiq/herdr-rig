@@ -728,7 +728,12 @@ async function main(args: string[]) {
       let msgs = q();
       // --wait is the listener: while it runs, deliver() stops typing into this pane (no clash with a draft)
       if (o.wait) db.run("INSERT OR REPLACE INTO settings VALUES(?,?)", [`listener.${me}`, String(process.pid)]);
-      while (o.wait && !msgs.length) { await Bun.sleep(2000); msgs = q(); }
+      while (o.wait && !msgs.length) {
+        await Bun.sleep(2000);
+        // a newer listener took over: leave the messages to it instead of reading them here
+        if (get(`listener.${me}`) !== String(process.pid)) { console.log("(replaced by a newer listener)"); return; }
+        msgs = q();
+      }
       for (const m of msgs) console.log(`${m.at} ${m.frm}${m.ticket ? ` [${m.ticket}]` : ""}: ${m.body}`);
       if (msgs.length) db.run(`UPDATE messages SET seen=1 WHERE id IN (${msgs.map(m => m.id).join(",")})`);
       else console.log("(empty)");
@@ -771,14 +776,18 @@ export const SKILL_DIRS: Record<string, string> = {
 };
 function install(names: string[]) {
   const home = process.env.RIG_HOME ?? homedir();
+  // Claude Code reads user skills from $CLAUDE_CONFIG_DIR/skills when that is set (another account or profile)
+  const claudeDir = process.env.CLAUDE_CONFIG_DIR;
+  const root = (h: string, rel: string) => h === "claude" && claudeDir ? claudeDir : join(home, rel.split("/")[0]);
+  const dir = (h: string, rel: string) => h === "claude" && claudeDir ? join(claudeDir, "skills") : join(home, rel);
   for (const [h, rel] of Object.entries(SKILL_DIRS)) {
-    if (names.length ? !names.includes(h) : !existsSync(join(home, rel.split("/")[0]))) continue;
+    if (names.length ? !names.includes(h) : !existsSync(root(h, rel))) continue;
     for (const role of ["manager", "worker", "reviewer"]) {
-      const out = join(home, rel, `rig-${role}`);
+      const out = join(dir(h, rel), `rig-${role}`);
       mkdirSync(out, { recursive: true });
       writeFileSync(join(out, "SKILL.md"), readFileSync(join(SKILLS, role, "SKILL.md"), "utf8").replace(/^name: .*$/m, `name: rig-${role}`));
     }
-    console.log(`${h}: ${join(home, rel)}/rig-{manager,worker,reviewer}`);
+    console.log(`${h}: ${dir(h, rel)}/rig-{manager,worker,reviewer}`);
   }
   // the Herdr desktop app gets the native board mod; herdr CLI users keep the terminal board
   const app = APP_HOME();
