@@ -219,7 +219,17 @@ async function main(args: string[]) {
   if (!cmd || cmd === "help") return console.log(HELP);
   if (cmd === "skill") return console.log(readFileSync(join(SKILLS, pos[0] ?? "manager", "SKILL.md"), "utf8"));
   if (cmd === "install") return install(pos);
+  if (cmd === "update") { // a git checkout (bun link) pulls; an install from GitHub reinstalls. Skills follow on their own.
+    const git = existsSync(join(import.meta.dir, ".git"));
+    const p = Bun.spawnSync(git ? ["git", "-C", import.meta.dir, "pull", "--ff-only"] : ["bun", "add", "-g", "github:zanuartri/herdr-rig"],
+      { stdio: ["ignore", "inherit", "inherit"] });
+    if (p.exitCode) process.exit(p.exitCode);
+    // the board mod is a copy, so refresh it where the desktop app has it
+    if (existsSync(join(APP_HOME(), "mods", "rig-board"))) Bun.spawnSync(["rig", "install", "herdr-app"], { stdio: ["ignore", "ignore", "inherit"] });
+    return console.log(`rig is up to date (${JSON.parse(readFileSync(join(import.meta.dir, "package.json"), "utf8")).version})`);
+  }
 
+  if (["ls", "new", "dispatch"].includes(cmd) && !process.env.RIG_RUN) await updateNotice();
   const root = repoRoot();
   const dir = join(root, ".rig");
   if (!existsSync(dir)) { mkdirSync(dir, { recursive: true }); writeFileSync(join(dir, ".gitignore"), "*\n"); }
@@ -774,6 +784,28 @@ export const SKILL_DIRS: Record<string, string> = {
   claude: ".claude/skills", codex: ".codex/skills", agents: ".agents/skills", opencode: ".config/opencode/skills",
   pi: ".pi/agent/skills", omp: ".omp/agent/skills", commandcode: ".commandcode/skills",
 };
+// a one-line notice when a newer release is out. GitHub is asked at most once a day (1.5s cap, quiet offline);
+// the answer is cached in ~/.rig-update.json. RIG_NO_UPDATE_CHECK=1 turns it off; tests never check.
+async function updateNotice() {
+  if (process.env.RIG_NO_UPDATE_CHECK || process.env.NODE_ENV === "test") return;
+  const file = join(process.env.RIG_HOME ?? homedir(), ".rig-update.json");
+  let c: { at?: number, latest?: string } = {};
+  try { c = JSON.parse(readFileSync(file, "utf8")); } catch {}
+  if (!c.at || Date.now() - c.at > 86400000) {
+    try {
+      const r = await fetch("https://api.github.com/repos/zanuartri/herdr-rig/releases/latest", { signal: AbortSignal.timeout(1500) });
+      if (r.ok) c.latest = String((await r.json()).tag_name ?? "").replace(/^v/, "");
+    } catch {}
+    c.at = Date.now();
+    try { writeFileSync(file, JSON.stringify(c)); } catch {}
+  }
+  const mine = JSON.parse(readFileSync(join(import.meta.dir, "package.json"), "utf8")).version;
+  const num = (v: string) => v.split(".").map(Number);
+  const newer = (a: number[], b: number[]) => a[0] - b[0] || a[1] - b[1] || a[2] - b[2];
+  if (c.latest && newer(num(c.latest), num(mine)) > 0)
+    console.error(`rig ${c.latest} is out (you have ${mine}). Run: rig update`);
+}
+
 function install(names: string[]) {
   const home = process.env.RIG_HOME ?? homedir();
   // Claude Code reads user skills from $CLAUDE_CONFIG_DIR/skills when that is set (another account or profile)
@@ -785,7 +817,10 @@ function install(names: string[]) {
     for (const role of ["manager", "worker", "reviewer"]) {
       const out = join(dir(h, rel), `rig-${role}`);
       mkdirSync(out, { recursive: true });
-      writeFileSync(join(out, "SKILL.md"), readFileSync(join(SKILLS, role, "SKILL.md"), "utf8").replace(/^name: .*$/m, `name: rig-${role}`));
+      // only the frontmatter (so the harness can find the skill) and a pointer: the instructions come from
+      // `rig skill`, so they always match the installed rig and an update never needs another install
+      const front = readFileSync(join(SKILLS, role, "SKILL.md"), "utf8").match(/^---\n[\s\S]*?\n---\n/)![0].replace(/^name: .*$/m, `name: rig-${role}`);
+      writeFileSync(join(out, "SKILL.md"), `${front}\n# rig ${role}\n\nThe instructions ship with the rig CLI, so they always match the installed version. Run \`rig skill ${role}\` now and follow what it prints.\n`);
     }
     console.log(`${h}: ${dir(h, rel)}/rig-{manager,worker,reviewer}`);
   }
@@ -815,6 +850,7 @@ const HELP = `rig: manager/worker/reviewer rig on herdr. State: <repo>/.rig/rig.
   rig close T-1|<run#>                       close a ticket's panes/tabs (status=done does it too)
   rig inbox [--wait]                         unread messages for me
   rig ps [--all]                             runs
+  rig update                                 update rig (and the board mod); installed skills follow by themselves
   rig install [claude codex agents opencode pi omp commandcode herdr-app]
                                              skills as rig-manager/worker/reviewer + the herdr-app board mod (default: all found)
   rig skill [manager|worker|reviewer]        print a skill (for harnesses without skill support)

@@ -46,7 +46,9 @@ rig install       # copies the rig-manager/-worker/-reviewer skills into every a
                   # and the board mod into the herdr desktop app if it is installed
 ```
 
-To hack on it instead, clone the repo and run `bun link` inside it. `rig` then runs your checkout, so changes apply right away (run `rig install` again after editing a skill). To update an install, run the `bun add -g` line again.
+To update, run `rig update`. rig checks for a new release at most once a day and says so in one line (`RIG_NO_UPDATE_CHECK=1` turns that off). The installed skills only point at `rig skill <role>`, so they always match the rig you have and never need reinstalling.
+
+To hack on it instead, clone the repo and run `bun link` inside it. `rig` then runs your checkout, so changes apply right away, and `rig update` does a `git pull`.
 
 For Claude Code you can use the plugin instead: `claude plugin marketplace add zanuartri/herdr-rig`, then `claude plugin install rig@herdr-rig`.
 
@@ -129,6 +131,14 @@ rig clean [T-3] [--force] · rig install [harness…] · rig skill manager|worke
 ## Contributing
 
 Issues and PRs are welcome. Keep it small: logic that is judgement belongs in `skills/`, and `rig.ts` only keeps state and launches runs. Run `bun test` before sending a change.
+
+## Contributors
+
+Thanks to everyone who has helped build rig.
+
+[![contributors](https://raw.githubusercontent.com/zanuartri/herdr-rig/contributors/contributors.svg)](https://github.com/zanuartri/herdr-rig/graphs/contributors)
+
+<sub>Updated automatically. Bot and AI agent accounts are left out.</sub>
 
 ## License
 
