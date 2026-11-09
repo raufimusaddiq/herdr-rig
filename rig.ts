@@ -17,6 +17,33 @@ const now = () => new Date().toISOString().slice(0, 19).replace("T", " ");
 // ---- harnesses: data, not code. "{model}" expands to the `model` args, then the `effort` args (each dropped when unset). Prompt is appended last.
 // launch: the interactive command takes the first prompt as its last argument. Typing it into a booting TUI can be lost,
 // or worse, answer a startup dialog (the claude folder-trust prompt defaults to "No, exit"). Without launch, rig types it.
+/** where the next overflow run goes, given the live panes of one overflow tab in open order: a split off `anchor`, or a new tab.
+ *  Left column first: each split halves a pane, so splitting c0, c0, c1 gives four equal rows (no ratio needed on either backend).
+ *  Then the right column: one pane beside each left row, so it is two true columns. After a close the count is lower, so the gap just fills. */
+export function slot(panes: string[], max = 8): { place: "tab" | "right" | "down", anchor?: string } {
+  const n = panes.length, half = Math.ceil(max / 2);
+  if (n === 0 || n >= max) return { place: "tab" };
+  if (n >= half) return { place: "right", anchor: panes[n - half] };
+  return { place: "down", anchor: panes[n - 2 ** Math.floor(Math.log2(n))] };
+}
+
+/** what a dispatch does about the worktree. setting: on | off | herdr (herdr = a space of its own, worker left, reviewer right).
+ *  space: the run goes into the ticket's own space; git: rig makes the worktree itself with `git worktree add`
+ *  (a space in the app also has git make it; on the herdr CLI `herdr worktree create` does). Headless runs have no pane, so they never use a space. */
+export function worktreePlan(role: string, setting: string, noWorktree: boolean, mode: string, hasWorktree: boolean, hasSpace: boolean) {
+  const space = mode !== "headless" && (hasSpace || (!noWorktree && setting === "herdr" && (role === "worker" || hasWorktree)));
+  const git = role === "worker" && !hasWorktree && !noWorktree && (setting === "on" || (setting === "herdr" && !space));
+  return { space, git };
+}
+/** first value of `key` anywhere in a parsed herdr JSON reply (its shapes nest differently per command) */
+export function deep(o: any, key: string): any {
+  if (o && typeof o === "object") {
+    if (key in o) return o[key];
+    for (const v of Object.values(o)) { const r = deep(v, key); if (r !== undefined) return r; }
+  }
+}
+const jsonOf = (s: string) => { try { return JSON.parse(s); } catch { return null; } };
+
 export const HARNESSES: Record<string, any> = {
   claude: { kind: "claude", launch: true, model: ["--model", "{model}"], effort: ["--effort", "{effort}"],
     interactive: ["claude", "--dangerously-skip-permissions", "--session-id", "{sid}", "{model}"],
@@ -126,7 +153,24 @@ export const mux = HC ? {
   notify: (title: string, body: string) => {}, // ponytail: no toast API in herdr-app yet; the message is stored and shows on the board
   // place it next to the manager (its own space/pane), not wherever the person is looking now
   // cmd: a program, or { mod, props } for an app mod pane. Returns the terminal, or the pane for a mod.
-  open(place: "right" | "down" | "tab", cwd: string, name: string, cmd: string[] | { mod: string, props: any }, anchor = SELF): string {
+  // opening must never move the person's view: put the selected space/tab and the focused pane back afterwards
+  open(place: "right" | "down" | "tab" | "space", cwd: string, name: string, cmd: string[] | { mod: string, props: any }, anchor = SELF): string {
+    let v: any; try { v = JSON.parse(sh(["herdr-app", "status"]).out); } catch {}
+    try { return this.open_(place, cwd, name, cmd, anchor); } finally {
+      try {
+        const n = JSON.parse(sh(["herdr-app", "status"]).out);
+        if (v?.space && n.space !== v.space) sh(["herdr-app", "do", "space.select", "--id", v.space]);
+        if (v?.tab && n.tab !== v.tab) sh(["herdr-app", "do", "tab.select", "--id", v.tab]);
+        if (v?.focused_pane && n.focused_pane !== v.focused_pane) sh(["herdr-app", "do", "pane.focus", "--pane", v.focused_pane]);
+      } catch {}
+    }
+  },
+  // the ticket's space: the space of this terminal goes with all its terminals (the worker and a reviewer beside it)
+  closeSpace: (t: string) => {
+    try { for (const sp of JSON.parse(sh(["herdr-app", "ls"]).out).spaces) if (sp.tabs.some((tb: any) => tb.terminals.some((x: any) => x.terminal === t)))
+      sh(["herdr-app", "do", "space.close", "--id", sp.id, "--confirmed", "true"]); } catch {}
+  },
+  open_(place: "right" | "down" | "tab" | "space", cwd: string, name: string, cmd: string[] | { mod: string, props: any }, anchor = SELF): string {
     let at: { space?: string, pane: string } | undefined = anchor.startsWith("p") ? { pane: anchor } : undefined;
     try { for (const sp of JSON.parse(sh(["herdr-app", "ls"]).out).spaces) for (const tb of sp.tabs) for (const t of tb.terminals)
       if (t.terminal === anchor) at = { space: sp.id, pane: t.pane }; } catch {}
@@ -134,16 +178,17 @@ export const mux = HC ? {
       const r = sh(["herdr-app", "do", place === "tab" ? "tab.new" : "pane.split", JSON.stringify(place === "tab"
         ? { name, mod: cmd.mod, props: cmd.props } : { direction: place, ...(at ? { pane: at.pane } : {}), mod: cmd.mod, props: cmd.props })]);
       const p = r.ok ? JSON.parse(r.out).pane : undefined;
-      if (!p && anchor !== SELF) return this.open(place === "down" ? "right" : place, cwd, name, cmd);
+      if (!p && anchor !== SELF) return this.open_(place === "down" ? "right" : place, cwd, name, cmd);
       return p ?? die(`herdr-app: ${r.err || r.out}`);
     }
     // pane.split has no folder arg, so _exec cds then runs the agent
-    const r = place === "tab"
+    const r = place === "space" ? sh(["herdr-app", "do", "space.new", "--name", name, "--folder", cwd, "--argv", JSON.stringify(cmd)])
+      : place === "tab"
       ? sh(["herdr-app", "do", "tab.new", "--name", name, "--folder", cwd, "--argv", JSON.stringify(cmd), ...(at ? ["--space", at.space] : [])])
       : at ? sh(["herdr-app", "do", "pane.split", "--direction", place, "--pane", at.pane, "--argv", JSON.stringify(["bun", import.meta.path, "_exec", cwd, ...cmd])])
       : sh(["herdr-app", "do", "terminal.open", "--folder", cwd, "--place", place, "--argv", JSON.stringify(cmd)]);
     const t = r.ok ? JSON.parse(r.out).terminal : undefined;
-    if (!t && anchor !== SELF) return this.open(place === "down" ? "right" : place, cwd, name, cmd); // anchor gone: start beside the manager
+    if (!t && anchor !== SELF) return this.open_(place === "down" ? "right" : place, cwd, name, cmd); // anchor gone: start beside the manager
     return t ?? die(`herdr-app: ${r.err || r.out}`);
   },
   /** wait until the agent works then settles; returns its status, or null when the terminal is gone */
@@ -176,6 +221,7 @@ export const mux = HC ? {
   alive: (p: string) => !paneGone(p),
   focused: (p: string) => /"focused"\s*:\s*true/.test(sh(["herdr", "pane", "get", p]).out),
   close: (p: string) => sh(["herdr", "pane", "close", p]), // the last pane of a tab closes the tab
+  closeSpace: (p: string) => { const w = deep(jsonOf(sh(["herdr", "pane", "get", p]).out), "workspace_id"); if (w) sh(["herdr", "workspace", "close", w]); },
   notify: (title: string, body: string) => sh(["herdr", "notification", "show", title, "--body", body, "--sound", "request"]),
   open: (..._: any[]): string => die("herdr: open is inline in dispatch"),
   async settle(p: string, after = 0): Promise<[string, number] | null> {
@@ -202,7 +248,7 @@ export const mux = HC ? {
 const DEFAULTS: Record<string, string> = {
   "worker.harness": "claude", "worker.model": "", "worker.effort": "", "reviewer.harness": "codex", "reviewer.model": "", "reviewer.effort": "",
   merge: "local", setup: "",
-  mode: "pane", worktree: "on", autonomy: "review", "pane.max": "2", board: "auto",
+  mode: "pane", worktree: "on", autonomy: "review", "pane.max": "2", "tab.max": "8", board: "auto",
 };
 
 
@@ -213,7 +259,7 @@ async function main(args: string[]) {
   }
   const { values: o, positionals: [cmd, ...pos] } = parseArgs({ args, allowPositionals: true, strict: false, options: {
     body: { type: "string" }, of: { type: "string" }, after: { type: "string" }, base: { type: "string" }, role: { type: "string" }, harness: { type: "string" }, model: { type: "string" }, effort: { type: "string" },
-    mode: { type: "string" }, "no-worktree": { type: "boolean" }, review: { type: "boolean" }, now: { type: "boolean" },
+    mode: { type: "string" }, worktree: { type: "string" }, "no-worktree": { type: "boolean" }, review: { type: "boolean" }, now: { type: "boolean" },
     mine: { type: "boolean" }, all: { type: "boolean" }, wait: { type: "boolean" }, open: { type: "boolean" },
     tab: { type: "boolean" }, once: { type: "boolean" }, force: { type: "boolean" }, json: { type: "boolean" }, tui: { type: "boolean" } } });
   if (!cmd || cmd === "help") return console.log(HELP);
@@ -249,7 +295,9 @@ async function main(args: string[]) {
     ORDER BY id DESC LIMIT 1`).get(...(role ? [t, role] : [t])) as any;
   // the board shows who is on a ticket now: its newest running run (a closed reviewer must not hide a working worker), else the last one
   const boardRun = (t: string) => (db.query("SELECT * FROM runs WHERE ticket=? COLLATE NOCASE AND status='running' ORDER BY id DESC LIMIT 1").get(t) as any) ?? lastRun(t);
-  const runOf = (target: string) => (/^\d+$/.test(target) ? db.query("SELECT * FROM runs WHERE id=?").get(Number(target)) : lastRun(target, o.role as string)) as any
+  // a ticket means its worker (FIX findings and steering go there), even while a newer reviewer run exists;
+  // --role reviewer or a run number picks another
+  const runOf = (target: string) => (/^\d+$/.test(target) ? db.query("SELECT * FROM runs WHERE id=?").get(Number(target)) : lastRun(target, (o.role as string) ?? "worker")) as any
     ?? die(`no run for ${target}`);
   const kill = (pid: number) => process.platform === "win32"
     ? sh(["taskkill", "/T", "/F", "/PID", String(pid)]) : (() => { try { process.kill(-pid, "SIGTERM"); } catch {} })();
@@ -357,7 +405,7 @@ async function main(args: string[]) {
     const auto = ({ ask: "ask each ticket", review: "merge on yes", merge: "auto-merge" } as any)[st.autonomy] ?? st.autonomy;
     const who = (h: string) => h.split(" ")[0];
     const chips: [string, string][] = [
-      [`${auto} · ${st.merge === "pr" ? "PR" : "local"}`, ""], [st.worktree === "on" ? "worktree" : "no worktree", ""], [st.mode, ""],
+      [`${auto} · ${st.merge === "pr" ? "PR" : "local"}`, ""], [st.worktree === "on" ? "worktree" : st.worktree === "herdr" ? "worktree space" : "no worktree", ""], [st.mode, ""],
       ...(st.worker ? [[`${who(st.worker)} → ${who(st.reviewer)}`, c(HUE256[who(st.worker)] ?? 252, who(st.worker)) + c(90, " → ") + c(HUE256[who(st.reviewer)] ?? 252, who(st.reviewer))] as [string, string]] : []),
     ];
     let line = "", used = 0;
@@ -486,7 +534,9 @@ async function main(args: string[]) {
   const closeRuns = (ticketId: string) => {
     for (const r of db.query("SELECT * FROM runs WHERE ticket=? AND status <> 'closed'").all(ticketId) as any[]) {
       db.run("UPDATE runs SET status='closed' WHERE id=?", [r.id]); // first, so its watcher knows this was on purpose
-      if (r.mode === "headless") { if (r.pid) kill(r.pid); } else if (r.pane) shut(r.pane);
+      if (r.mode === "headless") { if (r.pid) kill(r.pid); }
+      else if (r.pane && r.mode === "space") { mux.closeSpace(r.pane); if (mux.alive(r.pane)) shut(r.pane); } // the whole space; the next run of it finds it gone
+      else if (r.pane) shut(r.pane);
     }
   };
 
@@ -554,13 +604,25 @@ async function main(args: string[]) {
       const effort = (o.effort as string) ?? (own ? get(`${role}.effort`) : "") ?? "";
       let mode = (o.mode as string) ?? get("mode");
       let cwd = t.worktree ?? root;
-      if (role === "worker" && !t.worktree && !o["no-worktree"] && get("worktree") === "on") {
+      // worktree=herdr: the ticket gets a space of its own; a live worker there is what a reviewer splits beside
+      const anchor = (db.query("SELECT pane FROM runs WHERE ticket=? AND mode='space' AND status <> 'closed' ORDER BY id DESC").all(t.id) as any[])
+        .map(r => r.pane).find(p => p && mux.alive(p)) as string | undefined;
+      const plan = worktreePlan(role, (o.worktree as string) ?? get("worktree"), !!o["no-worktree"], mode, !!t.worktree, !!anchor);
+      const spaceName = `${t.id} ${t.title}`;
+      let wtMade: ReturnType<typeof sh> | undefined; // herdr CLI: the reply of `herdr worktree create`, which also opens the space
+      if (role === "worker" && !t.worktree && (plan.git || plan.space)) {
         cwd = join(dir, "wt", t.id).replace(/\\/g, "/");
         const branch = `rig/${t.id}`;
-        const r = sh(["git", "worktree", "add", cwd, "-b", branch, base(t)], root);
-        if (!r.ok && !existsSync(cwd)) die(r.err);
+        if (plan.space && !HC) {
+          wtMade = sh(["herdr", "worktree", "create", "--cwd", root, "--branch", branch, "--base", base(t), "--path", cwd, "--label", spaceName, "--no-focus"]);
+          if (!wtMade.ok) die(`herdr worktree create: ${wtMade.err || wtMade.out}`);
+        } else {
+          const r = sh(["git", "worktree", "add", cwd, "-b", branch, base(t)], root);
+          if (!r.ok && !existsSync(cwd)) die(r.err);
+        }
         db.run("UPDATE tickets SET worktree=?, branch=? WHERE id=?", [cwd, branch, t.id]);
       }
+      if (plan.space) mode = "space";
       const sid = crypto.randomUUID();
       const runId = Number(db.run("INSERT INTO runs(ticket,role,harness,model,effort,mode,sid,status,cwd,started) VALUES(?,?,?,?,?,?,?,'starting',?,?)",
         [t.id, role, hname, model, effort, mode, sid, cwd, now()]).lastInsertRowid);
@@ -572,15 +634,28 @@ async function main(args: string[]) {
 
       // layout: manager left half; right column = board (top 50%) + pane.max runs under it (2 → 25% each); the rest go to tabs
       // ponytail: each split halves the last pane, so heights are only even up to pane.max=2
+      // a space run leaves the manager's space with just the manager and the board
       let col = mode === "pane" ? column(runId) : [];
-      if (mode === "pane" && get("board") !== "off" && !col.includes(get(`board.${me}`))) { openBoard(); col = column(runId); }
-      if (col.length - (col.includes(get(`board.${me}`)) ? 1 : 0) >= Number(get("pane.max"))) { mode = "tab"; db.run("UPDATE runs SET mode='tab' WHERE id=?", [runId]); }
-      const below = mode === "pane" ? col.at(-1) : undefined;
+      if ((mode === "pane" || plan.space) && get("board") !== "off" && !column(runId).includes(get(`board.${me}`))) { openBoard(); col = mode === "pane" ? column(runId) : []; }
+      let place: "tab" | "right" | "down" | "space" = plan.space ? (anchor ? "right" : "space") : mode === "tab" ? "tab" : col.at(-1) ? "down" : "right";
+      let below = plan.space ? anchor : mode === "pane" ? col.at(-1) : undefined;
+      if (mode === "pane" && col.length - (col.includes(get(`board.${me}`)) ? 1 : 0) >= Number(get("pane.max"))) {
+        // overflow: fill the newest overflow tab (mode "over-N"), else open the next one
+        const live = (db.query(`SELECT r.mode, r.pane FROM runs r JOIN tickets t ON t.id=r.ticket WHERE r.mode LIKE 'over-%' AND r.status <> 'closed'
+          AND t.manager=? AND r.id<>? ORDER BY r.id`).all(me, runId) as any[]).filter(r => r.pane && mux.alive(r.pane));
+        const last = db.query("SELECT mode FROM runs WHERE mode LIKE 'over-%' ORDER BY id DESC LIMIT 1").get() as any;
+        let n = Number(last?.mode.slice(5) ?? 0), s = { place: "tab" } as ReturnType<typeof slot>;
+        for (const k of new Set(live.map(r => r.mode)))
+          if ((s = slot(live.filter(r => r.mode === k).map(r => r.pane), Number(get("tab.max")))).place !== "tab") { n = Number(k.slice(5)); break; }
+        if (s.place === "tab") n++;
+        mode = `over-${n}`; place = s.place; below = s.anchor;
+        db.run("UPDATE runs SET mode=? WHERE id=?", [mode, runId]);
+      }
       if (mode === "headless") { spawnHeadless(runId, argv(h, "headless", model, sid, prompt, effort), cwd); return console.log(`run #${runId} headless`); }
 
       if (HC) {
         const cmdv = argv(h, "interactive", model, sid, h.launch ? prompt : undefined, effort);
-        const pane = mux.open(mode === "tab" ? "tab" : below ? "down" : "right", cwd, `${t.id} ${role}`, [...bin(cmdv[0]), ...cmdv.slice(1)], below);
+        const pane = mux.open(place, cwd, place === "space" ? spaceName : `${t.id} ${role}`, [...bin(cmdv[0]), ...cmdv.slice(1)], below);
         db.run("UPDATE runs SET pane=?, status='running' WHERE id=?", [pane, runId]);
         if (!h.launch) {
           // ponytail: agents settle to idle when ready; plain TUIs get a fixed 8s
@@ -591,13 +666,17 @@ async function main(args: string[]) {
         return console.log(`run #${runId} in terminal ${pane}`);
       }
       const envArgs = Object.entries(env).flatMap(([k, v]) => ["--env", `${k}=${v}`]);
-      const made = mode === "tab"
+      // opening a space must not move the person's view: note the workspace they are in, and go back to it
+      const viewing = plan.space ? deep(jsonOf(sh(["herdr", "pane", "get", SELF]).out), "workspace_id") : undefined;
+      const made = wtMade ?? (place === "space" ? sh(["herdr", "workspace", "create", "--cwd", cwd, "--label", spaceName, ...envArgs, "--no-focus"])
+        : place === "tab"
         ? sh(["herdr", "tab", "create", "--cwd", cwd, "--label", `${t.id} ${role}`, ...envArgs, "--no-focus"])
-        : sh(["herdr", "pane", "split", ...(below ? ["--pane", below, "--direction", "down"] : ["--current", "--direction", "right", "--ratio", "0.5"]),
-          "--cwd", cwd, ...envArgs, "--no-focus"]);
+        : sh(["herdr", "pane", "split", ...(below ? ["--pane", below, "--direction", place] : ["--current", "--direction", "right", "--ratio", "0.5"]),
+          "--cwd", cwd, ...envArgs, "--no-focus"]));
+      if (viewing) sh(["herdr", "workspace", "focus", viewing]);
       if (!made.ok) die(`herdr: ${made.err || made.out}`);
       const res = JSON.parse(made.out).result;
-      const pane = (mode === "tab" ? res.root_pane : res.pane).pane_id;
+      const pane = (place === "tab" || place === "space" ? deep(res, "root_pane")?.pane_id ?? deep(res, "pane_id") : res.pane.pane_id) as string;
       db.run("UPDATE runs SET pane=?, status='running' WHERE id=?", [pane, runId]);
       background("_watch", runId, cwd); // before the agent starts, so its first turn is watched too
       const cmdv = argv(h, "interactive", model, sid, h.launch ? prompt : undefined, effort);
@@ -842,11 +921,11 @@ const APP_HOME = () => process.env.HERDR_APP_HOME ?? join(process.env.RIG_HOME ?
 
 const HELP = `rig: manager/worker/reviewer rig on herdr. State: <repo>/.rig/rig.db
   rig set <key> <value> | rig get [key]      keys: worker.harness worker.model reviewer.harness reviewer.model
-                                             mode (pane|tab|headless) worktree (on|off) harness.<name> (JSON template)
+                                             mode (pane|tab|headless) worktree (on|off|herdr) harness.<name> (JSON template)
   rig new "title" [--body text|-] [--review] [--after T-3,T-4] [--base br]  create ticket (queued until those are done; base = your branch)
   rig ls [--mine] [--all] | rig show <T> | rig edit <T> status=done title=... [--body -]
-  rig dispatch <T> [note] [--role worker|reviewer] [--harness h] [--model m] [--effort e] [--mode pane|tab|headless] [--no-worktree]
-  rig tell <T|run#> <msg> [--now] [--role r]  steer a run (--now interrupts first; headless = interrupt + resume)
+  rig dispatch <T> [note] [--role worker|reviewer] [--harness h] [--model m] [--effort e] [--mode pane|tab|headless] [--worktree on|off|herdr] [--no-worktree]
+  rig tell <T|run#> <msg> [--now] [--role r]  steer the worker (or --role reviewer) (--now interrupts first; headless = interrupt + resume)
   rig stop <T|run#>                          interrupt
   rig say <manager|human|T|T/role> <msg>    message (pushed into the pane; human = herdr toast)
   rig board [--open|--tab] [--mine] [--all]  live ticket board (--open splits a pane, --tab opens a tab)

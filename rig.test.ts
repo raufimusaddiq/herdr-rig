@@ -2,7 +2,7 @@ import { test, expect, afterAll } from "bun:test";
 import { mkdtempSync, mkdirSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { argv, HARNESSES } from "./rig.ts";
+import { argv, HARNESSES, slot, worktreePlan, deep } from "./rig.ts";
 
 // every temp repo and home a test makes goes when the run ends
 const made: string[] = [];
@@ -139,9 +139,40 @@ test("the board shows the running worker, not a reviewer that already closed", (
   const t = json.groups.find((g: any) => g.title === "Working").tickets[0];
   expect(t.run.role).toBe("worker");
   expect(t.orphan).toBe(false);
+  // `tell T-1` steers the worker even though the reviewer is the newer run
+  rig("tell", "T-1", "fix it");
+  expect(Bun.spawnSync(["bun", join(import.meta.dir, "rig.ts"), "inbox"], { cwd: repo, env: { ...env, RIG_RUN: "1" } }).stdout.toString()).toContain("fix it");
   rig("close", "T-1");
 }, 30000);
 
 test("no test followed the inherited RIG_ROOT", () => {
   expect(require("node:fs").existsSync(join(decoy, ".rig"))).toBe(false);
+});
+
+test("slot: overflow tab fills the left column (4 even rows), then one pane beside each row, then a new tab", () => {
+  const p = (n: number) => Array.from({ length: n }, (_, i) => `p${i}`);
+  expect(slot([])).toEqual({ place: "tab" });
+  expect(slot(p(1))).toEqual({ place: "down", anchor: "p0" });
+  expect(slot(p(2))).toEqual({ place: "down", anchor: "p0" });
+  expect(slot(p(3))).toEqual({ place: "down", anchor: "p1" });
+  expect(slot(p(4))).toEqual({ place: "right", anchor: "p0" });
+  expect(slot(p(7))).toEqual({ place: "right", anchor: "p3" });
+  expect(slot(p(8))).toEqual({ place: "tab" });
+});
+
+test("worktreePlan: on/off unchanged, herdr puts a worker's worktree in its own space", () => {
+  const p = worktreePlan;
+  expect(p("worker", "on", false, "pane", false, false)).toEqual({ space: false, git: true });
+  expect(p("worker", "off", false, "pane", false, false)).toEqual({ space: false, git: false });
+  expect(p("worker", "herdr", true, "pane", false, false)).toEqual({ space: false, git: false }); // --no-worktree
+  expect(p("worker", "herdr", false, "pane", false, false)).toEqual({ space: true, git: false });
+  expect(p("worker", "herdr", false, "headless", false, false)).toEqual({ space: false, git: true }); // no pane to put in a space
+  expect(p("reviewer", "herdr", false, "pane", true, true)).toEqual({ space: true, git: false }); // beside the live worker
+  expect(p("reviewer", "on", false, "pane", true, true).space).toBe(true); // a ticket already in a space keeps its reviewer there
+  expect(p("reviewer", "herdr", false, "pane", false, false)).toEqual({ space: false, git: false }); // nothing to review in
+});
+
+test("deep finds ids in nested herdr replies", () => {
+  expect(deep({ result: { workspace: { workspace_id: "w1" }, root_pane: { pane_id: "p1" } } }, "workspace_id")).toBe("w1");
+  expect(deep({ result: {} }, "pane_id")).toBeUndefined();
 });

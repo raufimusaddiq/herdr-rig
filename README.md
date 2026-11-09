@@ -85,11 +85,12 @@ The first time in a repo, the manager asks once about harness, model, effort, pa
 - **Messages:** workers and reviewers run `rig say manager "…"`. The manager listens with `rig inbox --wait` as a background command, so nothing is typed into its pane while you write. Without a listener, rig types a message in only while you are not focused on that pane, and bundles anything that piled up into one message.
 - **Base branch:** a ticket starts from, and lands on, the branch the manager had checked out when it was created (`--base` picks another).
 - **Order:** `rig new "…" --after T-3,T-4` keeps a ticket Queued, and the manager hears when it is unblocked.
+- **Worktree spaces:** `rig set worktree herdr` (or `--worktree herdr`) opens each ticket as its own herdr space: worker on the left, reviewer on the right while it runs, and your manager space keeps just the manager and the board. `done` closes the space.
 - **Cleanup:** `done` closes the ticket's panes and tabs and removes its worktree and branch once the changes are in the base branch (normal or squash merge). Unmerged work is kept. `rig clean` sweeps leftovers.
 
 ## Layout
 
-The manager keeps the left half. The board opens by itself in the top half on the right, and up to `pane.max` (default 2) pane runs stack under it. Later runs open as tabs. Panes always open beside the manager, in its own space, not wherever you happen to be looking.
+The manager keeps the left half. The board opens by itself in the top half on the right, and up to `pane.max` (default 2) pane runs stack under it. Later runs fill overflow tabs of `tab.max` (default 8) panes each, two columns of 4: the left column fills first (four even rows), then one pane opens beside each row; a full tab opens the next. With `--mode tab` every run gets its own tab. Starting a run never moves your view: focus and the selected tab/space stay where they were. Panes always open beside the manager, in its own space, not wherever you happen to be looking.
 
 Change it for one run with `--mode tab|pane|headless`, or for good with `rig set pane.max 3`, `rig set mode tab`, `rig set board tui|off`.
 
