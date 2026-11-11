@@ -132,6 +132,22 @@ export function openHub() {
     CREATE TABLE IF NOT EXISTS settings(k TEXT PRIMARY KEY, v TEXT);`);
   return db;
 }
+// unread messages for `who`. wait: the listener; while it runs, nobody types into who's pane. A newer listener takes over.
+async function readInbox(db: Database, who: string, wait: boolean) {
+  const q = () => db.query("SELECT * FROM messages WHERE too=? AND seen=0 ORDER BY id").all(who) as any[];
+  const key = `listener.${who}`;
+  let msgs = q();
+  if (wait) db.run("INSERT OR REPLACE INTO settings VALUES(?,?)", [key, String(process.pid)]);
+  while (wait && !msgs.length) {
+    await Bun.sleep(2000);
+    // a newer listener took over: leave the messages to it instead of reading them here
+    if ((db.query("SELECT v FROM settings WHERE k=?").get(key) as any)?.v !== String(process.pid)) return console.log("(replaced by a newer listener)");
+    msgs = q();
+  }
+  for (const m of msgs) console.log(`${m.at} ${m.frm}${m.ticket ? ` [${m.ticket}]` : ""}: ${m.body}`);
+  if (msgs.length) db.run(`UPDATE messages SET seen=1 WHERE id IN (${msgs.map(m => m.id).join(",")})`);
+  else console.log("(empty)");
+}
 const repoName = (p: string) => p.split(/[\\/]/).pop()!;
 const register = (root: string) => openHub().run("INSERT INTO repos(path, name, added) VALUES(?,?,?) ON CONFLICT(path) DO NOTHING", [root, repoName(root), now()]);
 
@@ -290,6 +306,17 @@ async function main(args: string[]) {
     return console.log(`rig is up to date (${JSON.parse(readFileSync(join(import.meta.dir, "package.json"), "utf8")).version})`);
   }
 
+  // the orchestrator's commands: they work from any folder, not only inside a repo
+  if (cmd === "inbox" && o.hub) return readInbox(openHub(), "orchestrator", !!o.wait);
+  if (cmd === "tell" && /:manager$/.test(pos[0] ?? "")) { // <repo name or path>:manager → that repo's manager pane
+    const name = pos[0].slice(0, -":manager".length);
+    const rows = openHub().query("SELECT * FROM repos WHERE name=? OR path=?").all(name, name) as any[];
+    if (rows.length !== 1) die(rows.length ? `${name} names ${rows.length} repos; use its path` : `no repo ${name} in the hub (rig new or rig launch adds it)`);
+    if (!rows[0].manager) die(`${name} has no manager yet; start one with rig launch`);
+    process.env.RIG_ROOT = rows[0].path;
+    return main(["_hubtell", `manager:${rows[0].manager}`, ...pos.slice(1)]);
+  }
+
   if (["ls", "new", "dispatch"].includes(cmd) && !process.env.RIG_RUN) await updateNotice();
   const root = repoRoot();
   const dir = join(root, ".rig");
@@ -337,20 +364,20 @@ async function main(args: string[]) {
   // the visible screen's last 12 lines with text: enough to see where an agent stopped, short enough to read
   const tail = (screen: string) => screen.split("\n").filter(l => l.trim()).slice(-12).join("\n");
   const pushText = (m: any) => `[rig] message from ${m.frm}${m.ticket ? ` on ${m.ticket}` : ""}: ${m.body} (rig inbox to mark read)`;
-  function deliver(ticketId: string | null, to: string, body: string) {
+  function deliver(ticketId: string | null, to: string, body: string, frm = me) {
     // to myself (a manager's own command produced it): print it as output, never type it into my own pane
-    if (to === me) {
+    if (to === me && frm === me) {
       db.run("INSERT INTO messages(ticket, frm, too, body, at, seen) VALUES(?,?,?,?,?,1)", [ticketId, me, to, body, now()]);
       return console.log(`rig: ${body}`);
     }
-    const id = Number(db.run("INSERT INTO messages(ticket, frm, too, body, at) VALUES(?,?,?,?,?)", [ticketId, me, to, body, now()]).lastInsertRowid);
+    const id = Number(db.run("INSERT INTO messages(ticket, frm, too, body, at) VALUES(?,?,?,?,?)", [ticketId, frm, to, body, now()]).lastInsertRowid);
     const pane = paneOf(to);
     if (!pane || pane === "local") return;
     if (listening(to)) return; // its `rig inbox --wait` picks it up within 2s
     // typing into a pane the person is focused on would send their unsent draft with it: hold it until they leave the pane
     if (mux.focused(pane)) return void background("_deliver", id, root, false);
     // typed into the pane = read: the next `rig inbox` must not hand it out again
-    if (mux.push(pane, pushText({ frm: me, ticket: ticketId, body }))) db.run("UPDATE messages SET seen=1 WHERE id=?", [id]);
+    if (mux.push(pane, pushText({ frm, ticket: ticketId, body }))) db.run("UPDATE messages SET seen=1 WHERE id=?", [id]);
   }
 
   const ago = (at: string) => { const m = Math.round((Date.now() - Date.parse(at.replace(" ", "T") + "Z")) / 60000);
@@ -582,6 +609,12 @@ async function main(args: string[]) {
         const [k, ...v] = kv.split("=");
         if (!["title", "body", "status", "review", "manager", "after", "base", "story"].includes(k)) die(`can't edit ${k}`);
         db.run(`UPDATE tickets SET ${k}=? WHERE id=?`, [v.join("="), t.id]);
+        // a registered repo tells the orchestrator when a ticket needs a decision or is ready
+        if (k === "status" && v.join("=") !== t.status && ["needs-you", "blocked", "review"].includes(v.join("="))) {
+          const hub = openHub();
+          if (hub.query("SELECT 1 FROM repos WHERE path=?").get(root)) hub.run("INSERT INTO messages(repo, ticket, frm, too, body, at) VALUES(?,?,?,?,?,?)",
+            [root, t.id, `${repoName(root)}:${t.id}`, "orchestrator", `${t.id} is ${v.join("=")}: ${t.title}`, now()]);
+        }
         if (k === "status" && v.join("=") === "done") {
           closeRuns(t.id);
           const kept = cleanWorktree(t);
@@ -719,6 +752,7 @@ async function main(args: string[]) {
       }
       return console.log(`run #${runId} in pane ${pane}`);
     }
+    case "_hubtell": return deliver(null, pos[0], pos.slice(1).join(" ") || die("message required"), "orchestrator");
     case "_pane": { // a herdr pane runs this: start the run's stored argv in the foreground
       const r = db.query("SELECT * FROM runs WHERE id=?").get(Number(pos[0])) as any;
       const p = Bun.spawn(JSON.parse(r.cmd), { cwd: r.cwd, stdio: ["inherit", "inherit", "inherit"] });
@@ -827,27 +861,19 @@ async function main(args: string[]) {
         return;
       }
       const tid = process.env.RIG_RUN ? me.split("/")[0] : null;
+      if (to === "orchestrator") { // the hub inbox; the orchestrator's `rig inbox --hub --wait` picks it up
+        register(root);
+        // ponytail: stored only, never typed into the orchestrator's pane; it is expected to keep its listener running
+        openHub().run("INSERT INTO messages(repo, ticket, frm, too, body, at) VALUES(?,?,?,?,?,?)",
+          [root, tid, `${repoName(root)}:${process.env.RIG_RUN ? me : "manager"}`, "orchestrator", rest.join(" "), now()]);
+        return;
+      }
       const target = to === "manager" ? ticket(tid ?? die("say manager only works inside a run")).manager
         : to.includes("/") ? to : `${ticket(to).id}/${lastRun(to)?.role ?? "worker"}`;
       deliver(to === "manager" ? tid : target.split("/")[0], target, rest.join(" "));
       return;
     }
-    case "inbox": {
-      const q = () => db.query("SELECT * FROM messages WHERE too=? AND seen=0 ORDER BY id").all(me) as any[];
-      let msgs = q();
-      // --wait is the listener: while it runs, deliver() stops typing into this pane (no clash with a draft)
-      if (o.wait) db.run("INSERT OR REPLACE INTO settings VALUES(?,?)", [`listener.${me}`, String(process.pid)]);
-      while (o.wait && !msgs.length) {
-        await Bun.sleep(2000);
-        // a newer listener took over: leave the messages to it instead of reading them here
-        if (get(`listener.${me}`) !== String(process.pid)) { console.log("(replaced by a newer listener)"); return; }
-        msgs = q();
-      }
-      for (const m of msgs) console.log(`${m.at} ${m.frm}${m.ticket ? ` [${m.ticket}]` : ""}: ${m.body}`);
-      if (msgs.length) db.run(`UPDATE messages SET seen=1 WHERE id IN (${msgs.map(m => m.id).join(",")})`);
-      else console.log("(empty)");
-      return;
-    }
+    case "inbox": return readInbox(db, me, !!o.wait);
     case "ps": {
       const rows = db.query(`SELECT * FROM runs ${o.all ? "" : "WHERE status IN ('running','starting')"} ORDER BY id`).all() as any[];
       for (const r of rows) {

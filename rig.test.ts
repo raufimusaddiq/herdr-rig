@@ -170,6 +170,27 @@ test("rig new registers the repo in the hub and keeps its story", () => {
   expect(rows.length).toBe(1); // idempotent across rig new calls
 });
 
+test("hub: status events and say orchestrator reach the hub inbox; tell <repo>:manager reaches the manager", async () => {
+  const a = mkrepo(), b = mkrepo(), out = tmp("rig-out-"); // the orchestrator runs from a folder that is not a repo
+  rigIn(a, ["new", "x"]); rigIn(b, ["new", "y"]);
+  rigIn(out, ["inbox", "--hub"]); // drain what other tests left in the shared hub
+  const listener = Bun.spawn(["bun", join(import.meta.dir, "rig.ts"), "inbox", "--hub", "--wait"],
+    { cwd: out, env: { ...process.env, HERDR_PANE_ID: "", HC_TERMINAL_ID: "", RIG_ROOT: "" }, stdout: "pipe" });
+  await Bun.sleep(500);
+  rigIn(b, ["edit", "T-1", "status=needs-you"]);
+  await listener.exited;
+  expect(await new Response(listener.stdout).text()).toContain(`${b.split("/").pop()}:T-1 [T-1]: T-1 is needs-you: y`);
+  rigIn(a, ["edit", "T-1", "status=working"]); // not an event
+  rigIn(a, ["say", "orchestrator", "Q: ship A first?"]);
+  const inbox = rigIn(out, ["inbox", "--hub"]);
+  expect(inbox).toContain(`${a.split("/").pop()}:manager: Q: ship A first?`);
+  expect(inbox).not.toContain("working");
+  expect(rigIn(out, ["tell", `${a.split("/").pop()}:manager`, "go"])).toContain("no manager yet");
+  openHub().run("UPDATE repos SET manager='local' WHERE name=?", [a.split("/").pop()!]);
+  rigIn(out, ["tell", `${a.split("/").pop()}:manager`, "yes, A first"]);
+  expect(rigIn(a, ["inbox"])).toContain("orchestrator: yes, A first");
+}, 30000);
+
 test("no test followed the inherited RIG_ROOT", () => {
   expect(require("node:fs").existsSync(join(decoy, ".rig"))).toBe(false);
 });
