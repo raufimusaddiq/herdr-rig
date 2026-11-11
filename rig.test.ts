@@ -103,6 +103,7 @@ test("install copies renamed skills only into harnesses that exist", () => {
   const skill = require("node:fs").readFileSync(join(home, ".codex/skills/rig-worker/SKILL.md"), "utf8");
   expect(skill).toContain("name: rig-worker");
   expect(skill).toContain("rig skill worker"); // a pointer, so an update needs no reinstall
+  expect(require("node:fs").readFileSync(join(home, ".codex/skills/rig-orchestrator/SKILL.md"), "utf8")).toContain("rig skill orchestrator");
 });
 
 test("install puts Claude skills under CLAUDE_CONFIG_DIR when it is set", () => {

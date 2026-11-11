@@ -1024,7 +1024,7 @@ function install(names: string[]) {
   const dir = (h: string, rel: string) => h === "claude" && claudeDir ? join(claudeDir, "skills") : join(home, rel);
   for (const [h, rel] of Object.entries(SKILL_DIRS)) {
     if (names.length ? !names.includes(h) : !existsSync(root(h, rel))) continue;
-    for (const role of ["manager", "worker", "reviewer"]) {
+    for (const role of ["manager", "worker", "reviewer", "orchestrator"]) {
       const out = join(dir(h, rel), `rig-${role}`);
       mkdirSync(out, { recursive: true });
       // only the frontmatter (so the harness can find the skill) and a pointer: the instructions come from
@@ -1032,7 +1032,7 @@ function install(names: string[]) {
       const front = readFileSync(join(SKILLS, role, "SKILL.md"), "utf8").match(/^---\n[\s\S]*?\n---\n/)![0].replace(/^name: .*$/m, `name: rig-${role}`);
       writeFileSync(join(out, "SKILL.md"), `${front}\n# rig ${role}\n\nThe instructions ship with the rig CLI, so they always match the installed version. Run \`rig skill ${role}\` now and follow what it prints.\n`);
     }
-    console.log(`${h}: ${dir(h, rel)}/rig-{manager,worker,reviewer}`);
+    console.log(`${h}: ${dir(h, rel)}/rig-{manager,worker,reviewer,orchestrator}`);
   }
   // the Herdr desktop app gets the native board mod; herdr CLI users keep the terminal board
   const app = APP_HOME();
@@ -1049,21 +1049,26 @@ const APP_HOME = () => process.env.HERDR_APP_HOME ?? join(process.env.RIG_HOME ?
 const HELP = `rig: manager/worker/reviewer rig on herdr. State: <repo>/.rig/rig.db
   rig set <key> <value> | rig get [key]      keys: worker.harness worker.model reviewer.harness reviewer.model
                                              mode (pane|tab|headless) worktree (on|off|herdr) harness.<name> (JSON template)
-  rig new "title" [--body text|-] [--review] [--after T-3,T-4] [--base br]  create ticket (queued until those are done; base = your branch)
-  rig ls [--mine] [--all] | rig show <T> | rig edit <T> status=done title=... [--body -]
+  rig new "title" [--body text|-] [--review] [--after T-3,T-4] [--base br] [--story S-1]  create ticket (queued until those are done; base = your branch)
+  rig ls [--mine] [--all] | rig show <T> | rig edit <T> status=done title=... story=... [--body -]
   rig dispatch <T> [note] [--role worker|reviewer] [--harness h] [--model m] [--effort e] [--mode pane|tab|headless] [--worktree on|off|herdr] [--no-worktree]
   rig tell <T|run#> <msg> [--now] [--role r]  steer the worker (or --role reviewer) (--now interrupts first; headless = interrupt + resume)
   rig stop <T|run#>                          interrupt
-  rig say <manager|human|T|T/role> <msg>    message (pushed into the pane; human = herdr toast)
+  rig say <manager|human|orchestrator|T|T/role> <msg>  message (pushed into the pane; human = herdr toast; orchestrator = hub inbox)
   rig board [--open|--tab] [--mine] [--all]  live ticket board (--open splits a pane, --tab opens a tab)
   rig clean [T] [--force]                     remove worktrees of done tickets (merged only, unless --force)
   rig close T-1|<run#>                       close a ticket's panes/tabs (status=done does it too)
   rig inbox [--wait]                         unread messages for me
   rig ps [--all]                             runs
+orchestrator (any folder; repos registered in ~/.rig/hub.db by rig new / rig launch):
+  rig launch <repo path> --brief <file> [--harness h] [--model m] [--effort e] [--mode tab|pane]  start that repo's manager
+  rig inbox --hub [--wait]                   ticket events (needs-you/blocked/review) and rig say orchestrator messages
+  rig tell <repo>:manager <msg>              message a repo's manager (repo name or path)
+  rig board --hub [--all] [--once]           every registered repo, by story then repo
   rig update                                 update rig (and the board mod); installed skills follow by themselves
   rig install [claude codex agents opencode pi omp commandcode herdr-app]
-                                             skills as rig-manager/worker/reviewer + the herdr-app board mod (default: all found)
-  rig skill [manager|worker|reviewer]        print a skill (for harnesses without skill support)
+                                             skills as rig-manager/worker/reviewer/orchestrator + the herdr-app board mod (default: all found)
+  rig skill [manager|worker|reviewer|orchestrator]  print a skill (for harnesses without skill support)
 harnesses: ${Object.keys(HARNESSES).join(", ")}`;
 
 if (import.meta.main) await main(process.argv.slice(2));

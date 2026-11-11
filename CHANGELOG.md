@@ -2,6 +2,17 @@
 
 All notable changes to this project are documented here. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and versions follow [Semantic Versioning](https://semver.org/).
 
+## [Unreleased]
+
+### Added
+- Orchestrating several repos: one orchestrator session drives one manager per repo through a hub at `~/.rig/hub.db` (`$RIG_HOME/.rig/hub.db`).
+  - `rig launch <repo> --brief <file>` opens that repo's manager (tab or pane, focus unchanged) on the manager skill and the brief, with `RIG_ORCH` set.
+  - `rig inbox --hub [--wait]`: tickets in any registered repo turning `needs-you`, `blocked` or `review`, and `rig say orchestrator` from managers or workers.
+  - `rig tell <repo>:manager "…"` reaches a repo's manager with the usual focus-aware delivery.
+  - `rig board --hub` shows every registered repo, grouped by story, then repo.
+  - `rig new --story S-1` / `rig edit T-1 story=S-1`; `rig new` registers its repo in the hub.
+  - `rig-orchestrator` skill (`rig skill orchestrator`), installed by `rig install`; the manager skill says what to do when an orchestrator started it.
+
 ## [0.2.0] - 2026-11-09
 
 ### Added
