@@ -191,6 +191,28 @@ test("hub: status events and say orchestrator reach the hub inbox; tell <repo>:m
   expect(rigIn(a, ["inbox"])).toContain("orchestrator: yes, A first");
 }, 30000);
 
+test("board --hub shows every registered repo, by story then repo", () => {
+  const a = mkrepo(), b = mkrepo(), out = tmp("rig-out-");
+  const [na, nb] = [a, b].map(r => r.split("/").pop()!);
+  rigIn(a, ["new", "api change", "--story", "S-HUB"]);
+  rigIn(b, ["new", "client change", "--story", "S-HUB"]);
+  rigIn(b, ["new", "loose end"]);
+  rigIn(b, ["edit", "T-1", "status=needs-you"]);
+  rigIn(a, ["new", "finished", "--story", "S-HUB"]); rigIn(a, ["edit", "T-2", "status=done"]);
+  const board = rigIn(out, ["board", "--hub", "--once"]);
+  const story = board.indexOf("STORY S-HUB"), none = board.indexOf("NO STORY");
+  expect(story).toBeGreaterThan(-1);
+  expect(board.indexOf("api change")).toBeGreaterThan(story);
+  expect(board.indexOf("client change")).toBeGreaterThan(story);
+  expect(board.indexOf("client change")).toBeLessThan(none);
+  expect(board.indexOf("loose end")).toBeGreaterThan(none);
+  expect(board.slice(story, none)).toContain(na);
+  expect(board.slice(story, none)).toContain(nb);
+  expect(board).toContain("needs-you");
+  expect(board).not.toContain("finished");
+  expect(rigIn(out, ["board", "--hub", "--once", "--all"])).toContain("finished");
+});
+
 test("no test followed the inherited RIG_ROOT", () => {
   expect(require("node:fs").existsSync(join(decoy, ".rig"))).toBe(false);
 });

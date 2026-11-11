@@ -151,6 +151,59 @@ async function readInbox(db: Database, who: string, wait: boolean) {
 const repoName = (p: string) => p.split(/[\\/]/).pop()!;
 const register = (root: string) => openHub().run("INSERT INTO repos(path, name, added) VALUES(?,?,?) ON CONFLICT(path) DO NOTHING", [root, repoName(root), now()]);
 
+// codes above 107 are 256-color foregrounds (38;5;n)
+const c = (code: number, t: string) => `\x1b[${code > 107 ? `38;5;${code}` : code}m${t}\x1b[0m`;
+// board groups tickets by what they need from the person. Working sits high so a long Ready list can't push it
+// off a half-height pane. Unknown statuses fall into To do.
+const GROUPS: [string, string[], string, number][] = [ // title, statuses, dot, color
+  ["Needs you", ["needs-you", "blocked"], "●", 31],
+  ["Working", ["working", "reviewing"], "◐", 33],
+  ["Ready", ["review"], "◆", 32],
+  ["Queued", [], "◷", 90],
+  ["To do", ["open", "draft"], "○", 37],
+  ["Done", ["done"], "✓", 90],
+];
+// the tickets this one still waits on (its `after` list, minus what is done)
+function waitingIn(db: Database, t: any): string[] {
+  return String(t.after ?? "").split(/[,s]+/).filter(Boolean)
+    .filter(id => (db.query("SELECT status FROM tickets WHERE id=? COLLATE NOCASE").get(id) as any)?.status !== "done");
+}
+const groupIn = (db: Database, t: any) => (t.status === "open" || t.status === "draft") && waitingIn(db, t).length ? "Queued"
+  : GROUPS.find(g => g[1].includes(t.status))?.[0] ?? "To do";
+// every registered repo on one board: by story, then repo, then what each ticket needs. --all keeps done tickets.
+// ponytail: reads each repo's DB directly, no live herdr status per run; open that repo's own board for that
+function hubBoard(all: boolean) {
+  const W = Math.max(30, (process.stdout.columns || 100) - 2);
+  const fit = (s: string, n: number) => s.length > n ? s.slice(0, Math.max(0, n - 1)) + "…" : s;
+  const rows: any[] = [];
+  for (const r of openHub().query("SELECT * FROM repos ORDER BY name").all() as any[]) {
+    if (!existsSync(join(r.path, ".rig", "rig.db"))) continue;
+    const db = open(join(r.path, ".rig", "rig.db"));
+    for (const t of db.query("SELECT * FROM tickets ORDER BY created").all() as any[]) if (all || t.status !== "done") {
+      const run = db.query("SELECT role, harness FROM runs WHERE ticket=? AND status='running' ORDER BY id DESC").get(t.id) as any;
+      rows.push({ ...t, repo: r.name, group: GROUPS.findIndex(g => g[0] === groupIn(db, t)), run });
+    }
+    db.close();
+  }
+  let out = " " + c(1, c(214, "▲ rig")) + "  hub  " + c(90, new Date().toTimeString().slice(0, 5)) + "\n";
+  if (!rows.length) return out + c(90, "   no open tickets in any registered repo\n");
+  const stories = [...new Set(rows.map(t => t.story ?? ""))].sort((x, y) => !x ? 1 : !y ? -1 : x.localeCompare(y));
+  for (const st of stories) {
+    const head = `${st ? `STORY ${st}` : "NO STORY"} `;
+    out += "\n " + c(1, head) + c(90, "─".repeat(Math.max(0, W - head.length))) + "\n";
+    const mine = rows.filter(t => (t.story ?? "") === st);
+    for (const repo of [...new Set(mine.map(t => t.repo))]) {
+      out += "   " + c(1, c(117, repo)) + "\n";
+      for (const t of mine.filter(t => t.repo === repo).sort((x, y) => x.group - y.group)) {
+        const [, , dot, col] = GROUPS[t.group];
+        const right = `${t.status}${t.run ? `  ${t.run.role} ${t.run.harness}` : ""}`;
+        out += "   " + c(col, dot) + " " + fit(`${t.id}  ${t.title}`, W - right.length - 6).padEnd(W - right.length - 5) + c(90, right) + "\n";
+      }
+    }
+  }
+  return out;
+}
+
 // ---- terminal backend: herdr CLI (HERDR_PANE_ID) or herdr desktop app via hc + herdr-app (HC_TERMINAL_ID)
 // --hc: the board mod runs rig from the app, which has no terminal env
 const HC = !process.env.HERDR_PANE_ID && (!!process.env.HC_TERMINAL_ID || process.argv.includes("--hc"));
@@ -307,6 +360,12 @@ async function main(args: string[]) {
   }
 
   // the orchestrator's commands: they work from any folder, not only inside a repo
+  if (cmd === "board" && o.hub) for (let first = true; ; first = false) {
+    const text = hubBoard(!!o.all);
+    process.stdout.write(o.once ? text : (first ? "\x1b[2J" : "") + "\x1b[H" + text.replace(/\n/g, "\x1b[K\n") + "\x1b[J");
+    if (o.once) return;
+    await Bun.sleep(2000);
+  }
   if (cmd === "inbox" && o.hub) return readInbox(openHub(), "orchestrator", !!o.wait);
   if (cmd === "tell" && /:manager$/.test(pos[0] ?? "")) { // <repo name or path>:manager → that repo's manager pane
     const name = pos[0].slice(0, -":manager".length);
@@ -382,27 +441,9 @@ async function main(args: string[]) {
 
   const ago = (at: string) => { const m = Math.round((Date.now() - Date.parse(at.replace(" ", "T") + "Z")) / 60000);
     return m < 60 ? `${m}m` : m < 1440 ? `${Math.round(m / 60)}h` : `${Math.round(m / 1440)}d`; };
-  // codes above 107 are 256-color foregrounds (38;5;n)
-  const c = (code: number, t: string) => `\x1b[${code > 107 ? `38;5;${code}` : code}m${t}\x1b[0m`;
   // harness colors on the terminal board, matching the app board
   const HUE256: Record<string, number> = { claude: 173, codex: 115, opencode: 111, pi: 141, omp: 205, commandcode: 116 };
-  // board groups tickets by what they need from the person. Working sits high so a long Ready list can't push it
-  // off a half-height pane. Unknown statuses fall into To do.
-  const GROUPS: [string, string[], string, number][] = [ // title, statuses, dot, color
-    ["Needs you", ["needs-you", "blocked"], "●", 31],
-    ["Working", ["working", "reviewing"], "◐", 33],
-    ["Ready", ["review"], "◆", 32],
-    ["Queued", [], "◷", 90],
-    ["To do", ["open", "draft"], "○", 37],
-    ["Done", ["done"], "✓", 90],
-  ];
-  // the tickets this one still waits on (its `after` list, minus what is done)
-  function waiting(t: any): string[] {
-    return String(t.after ?? "").split(/[,s]+/).filter(Boolean)
-      .filter(id => (db.query("SELECT status FROM tickets WHERE id=? COLLATE NOCASE").get(id) as any)?.status !== "done");
-  }
-  const groupOf = (t: any) => (t.status === "open" || t.status === "draft") && waiting(t).length ? "Queued"
-    : GROUPS.find(g => g[1].includes(t.status))?.[0] ?? "To do";
+  const waiting = (t: any) => waitingIn(db, t), groupOf = (t: any) => groupIn(db, t);
   // the settings that change how the manager behaves, shown under the board header
   const boardSettings = () => ({ autonomy: get("autonomy"), merge: get("merge"), worktree: get("worktree"), mode: get("mode"),
     worker: [get("worker.harness"), get("worker.model"), get("worker.effort")].filter(Boolean).join(" "),
