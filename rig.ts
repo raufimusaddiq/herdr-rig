@@ -213,6 +213,23 @@ function hubBoard(all: boolean) {
   return out;
 }
 
+// the hub board as data, for the herdr-app mod: each repo's own `board --json` (same cards, live status), regrouped by story
+// ponytail: one rig process per repo per refresh; fine for a handful of repos
+function hubJson(hc: boolean) {
+  const hub = openHub(), repos = hub.query("SELECT * FROM repos ORDER BY name").all() as any[];
+  hub.close();
+  const per = repos.filter(r => existsSync(join(r.path, ".rig", "rig.db"))).map(r => {
+    const p = Bun.spawnSync([process.execPath, import.meta.path, "board", "--json", ...(hc ? ["--hc"] : [])],
+      { cwd: r.path, env: { ...process.env, RIG_ROOT: r.path, RIG_RUN: "" }, stdout: "pipe", stderr: "ignore", windowsHide: true });
+    return { name: r.name, path: r.path, data: jsonOf(p.stdout.toString()) };
+  }).filter(r => r.data);
+  const stories = [...new Set(per.flatMap(r => r.data.groups.flatMap((g: any) => g.tickets.map((t: any) => t.story ?? ""))))]
+    .sort((x, y) => !x ? 1 : !y ? -1 : x.localeCompare(y));
+  return { hub: true, stories: stories.map(st => ({ story: st || null, repos: per.map(r => ({ name: r.name, path: r.path,
+    groups: r.data.groups.map((g: any) => ({ title: g.title, tickets: g.tickets.filter((t: any) => (t.story ?? "") === st) })).filter((g: any) => g.tickets.length) }))
+    .filter(r => r.groups.length) })) };
+}
+
 // ---- terminal backend: herdr CLI (HERDR_PANE_ID) or herdr desktop app via hc + herdr-app (HC_TERMINAL_ID)
 // --hc: the board mod runs rig from the app, which has no terminal env
 const HC = !process.env.HERDR_PANE_ID && (!!process.env.HC_TERMINAL_ID || process.argv.includes("--hc"));
@@ -369,6 +386,19 @@ async function main(args: string[]) {
   }
 
   // the orchestrator's commands: they work from any folder, not only inside a repo
+  if (cmd === "board" && o.hub && o.json) return console.log(JSON.stringify(hubJson(HC)));
+  if (cmd === "board" && o.hub && (o.open || o.tab)) { // beside this pane (or a tab): the app mod when installed, else the terminal board
+    const cwd = process.cwd(), tab = !!o.tab;
+    if (HC && !o.tui && existsSync(join(APP_HOME(), "mods", "rig-board", "main.js")))
+      return console.log(mux.open(tab ? "tab" : "right", cwd, "rig hub", { mod: "rig-board", props: { rig: import.meta.path.replace(/\\/g, "/"), root: cwd.replace(/\\/g, "/"), bun: process.execPath, hub: true } }));
+    if (HC) return console.log(mux.open(tab ? "tab" : "right", cwd, "rig hub", ["bun", import.meta.path, "board", "--hub"]));
+    const made = tab ? sh(["herdr", "tab", "create", "--cwd", cwd, "--label", "rig hub", "--no-focus"])
+      : sh(["herdr", "pane", "split", "--current", "--direction", "right", "--ratio", "0.5", "--cwd", cwd, "--no-focus"]);
+    if (!made.ok) die(`herdr: ${made.err || made.out}`);
+    const res = JSON.parse(made.out).result, pane = (tab ? res.root_pane : res.pane).pane_id;
+    sh(["herdr", "pane", "run", pane, "rig board --hub"]);
+    return console.log(pane);
+  }
   if (cmd === "board" && o.hub) for (let first = true; ; first = false) {
     const text = hubBoard(!!o.all);
     process.stdout.write(o.once ? text : (first ? "\x1b[2J" : "") + "\x1b[H" + text.replace(/\n/g, "\x1b[K\n") + "\x1b[J");
@@ -522,7 +552,7 @@ async function main(args: string[]) {
         // what the agent is doing: its terminal title (agents set it to their current task), else the last message
         const doing = HC && r?.pane && live !== "gone" ? (hcGet(r.pane)?.title ?? "").replace(/^[^\p{L}\p{N}]+/u, "") : "";
         const wait = waiting(t).map(id => `${id} (${(db.query("SELECT status FROM tickets WHERE id=? COLLATE NOCASE").get(id) as any)?.status ?? "missing"})`);
-        return { id: t.id, title: t.title, status: t.status, manager: t.manager, waiting: wait, branch: t.branch ?? null, orphan: title === "Working" && !(r && live !== "gone" && r.status === "running"),
+        return { id: t.id, title: t.title, status: t.status, story: t.story ?? null, manager: t.manager, waiting: wait, branch: t.branch ?? null, orphan: title === "Working" && !(r && live !== "gone" && r.status === "running"),
           run: r && live !== "gone" ? { role: r.role, harness: r.harness, model: r.model, effort: r.effort, mode: r.mode, pane: r.pane, live, started: r.started } : null,
           note: wait.length && title === "Queued" ? `waiting on ${wait.join(", ")}` : doing || (m ? m.body.split("\n")[0].replace(/^\[\w+\]\s*/, "") : ""), noteAt: m?.at ?? null };
       }) })) };
@@ -631,7 +661,7 @@ async function main(args: string[]) {
     const native = HC && !o.tui && get("board") !== "tui" && existsSync(join(APP_HOME(), "mods", "rig-board", "main.js"));
     let pane: string;
     if (native) pane = mux.open(tab ? "tab" : below ? "down" : "right", root, "rig board",
-      { mod: "rig-board", props: { rig: import.meta.path.replace(/\\/g, "/"), root: root.replace(/\\/g, "/") } }, below);
+      { mod: "rig-board", props: { rig: import.meta.path.replace(/\\/g, "/"), root: root.replace(/\\/g, "/"), bun: process.execPath } }, below);
     else if (HC) pane = mux.open(tab ? "tab" : below ? "down" : "right", root, "rig board", cmdv, below);
     else {
       const made = tab ? sh(["herdr", "tab", "create", "--cwd", root, "--label", "rig board", "--no-focus"])
@@ -1081,7 +1111,7 @@ orchestrator (any folder; repos registered in ~/.rig/hub.db by rig new / rig lau
   rig launch <repo path> --brief <file> [--harness h] [--model m] [--effort e] [--mode tab|pane]  start that repo's manager
   rig inbox --hub [--wait]                   ticket events (needs-you/blocked/review) and rig say orchestrator messages
   rig tell <repo>:manager <msg>              message a repo's manager (repo name or path)
-  rig board --hub [--all] [--once]           every registered repo, by story then repo
+  rig board --hub [--all] [--once] [--open|--tab] [--json]  every registered repo, by story then repo (--open: the app board beside you)
   rig update                                 update rig (and the board mod); installed skills follow by themselves
   rig install [claude codex agents opencode pi omp commandcode herdr-app]
                                              skills as rig-manager/worker/reviewer/orchestrator + the herdr-app board mod (default: all found)

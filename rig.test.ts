@@ -218,6 +218,13 @@ test("board --hub shows every registered repo, by story then repo", () => {
   expect(board).toContain("needs-you");
   expect(board).not.toContain("finished");
   expect(rigIn(out, ["board", "--hub", "--once", "--all"])).toContain("finished");
+  // the app board's data: each repo's own cards, regrouped by story
+  const json = JSON.parse(rigIn(out, ["board", "--hub", "--json"]));
+  const s = json.stories.find((x: any) => x.story === "S-HUB");
+  expect(s.repos.map((r: any) => r.name).sort()).toEqual([na, nb].sort());
+  expect(s.repos.find((r: any) => r.name === nb).groups.find((g: any) => g.title === "Needs you").tickets[0].title).toBe("client change");
+  expect(json.stories.at(-1).story).toBeNull(); // no story goes last
+  expect(JSON.stringify(json.stories.at(-1))).toContain("loose end");
 });
 
 test("launch: the manager starts on its skill and brief; bad input stops before any pane opens", () => {
