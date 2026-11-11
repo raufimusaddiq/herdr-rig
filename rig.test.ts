@@ -175,6 +175,12 @@ test("hub: status events and say orchestrator reach the hub inbox; tell <repo>:m
   const a = mkrepo(), b = mkrepo(), out = tmp("rig-out-"); // the orchestrator runs from a folder that is not a repo
   rigIn(a, ["new", "x"]); rigIn(b, ["new", "y"]);
   rigIn(out, ["inbox", "--hub"]); // drain what other tests left in the shared hub
+  const quiet = mkrepo(), qn = quiet.split("/").pop()!;
+  rigIn(quiet, ["new", "q"]);
+  if (!openHub().query("SELECT 1 FROM settings WHERE k='listener.orchestrator'").get()) { // no orchestrator yet: no events
+    rigIn(quiet, ["edit", "T-1", "status=review"]);
+    expect(openHub().query("SELECT 1 FROM messages WHERE frm=?").get(`${qn}:T-1`)).toBeNull();
+  }
   const listener = Bun.spawn(["bun", join(import.meta.dir, "rig.ts"), "inbox", "--hub", "--wait"],
     { cwd: out, env: { ...process.env, HERDR_PANE_ID: "", HC_TERMINAL_ID: "", RIG_ROOT: "" }, stdout: "pipe" });
   await Bun.sleep(500);
@@ -223,6 +229,7 @@ test("launch: the manager starts on its skill and brief; bad input stops before 
   expect(launchCmd(HARNESSES.commandcode, "/b.md", "", "", "S").cmd).not.toContain(prompt); // typed in after start instead
   const out = tmp("rig-out-"), repo = mkrepo();
   expect(rigIn(out, ["launch", out, "--brief", "x"])).toContain("is not a git repo");
+  expect(rigIn(out, ["launch", join(out, "gone"), "--brief", "x"])).toContain("no folder");
   expect(rigIn(out, ["launch", repo])).toContain("--brief <file> is required");
   expect(rigIn(out, ["launch", repo, "--brief", "nope.md"])).toContain("no brief at");
 });

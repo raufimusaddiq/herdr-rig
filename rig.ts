@@ -172,7 +172,7 @@ const GROUPS: [string, string[], string, number][] = [ // title, statuses, dot, 
 ];
 // the tickets this one still waits on (its `after` list, minus what is done)
 function waitingIn(db: Database, t: any): string[] {
-  return String(t.after ?? "").split(/[,s]+/).filter(Boolean)
+  return String(t.after ?? "").split(/[,\s]+/).filter(Boolean)
     .filter(id => (db.query("SELECT status FROM tickets WHERE id=? COLLATE NOCASE").get(id) as any)?.status !== "done");
 }
 const groupIn = (db: Database, t: any) => (t.status === "open" || t.status === "draft") && waitingIn(db, t).length ? "Queued"
@@ -183,12 +183,14 @@ function hubBoard(all: boolean) {
   const W = Math.max(30, (process.stdout.columns || 100) - 2);
   const fit = (s: string, n: number) => s.length > n ? s.slice(0, Math.max(0, n - 1)) + "…" : s;
   const rows: any[] = [];
-  for (const r of openHub().query("SELECT * FROM repos ORDER BY name").all() as any[]) {
+  const hub = openHub(), repos = hub.query("SELECT * FROM repos ORDER BY name").all() as any[];
+  hub.close(); // the live board calls this every 2s
+  for (const r of repos) {
     if (!existsSync(join(r.path, ".rig", "rig.db"))) continue;
-    const db = open(join(r.path, ".rig", "rig.db"));
+    const db = new Database(join(r.path, ".rig", "rig.db"), { readonly: true });
     for (const t of db.query("SELECT * FROM tickets ORDER BY created").all() as any[]) if (all || t.status !== "done") {
       const run = db.query("SELECT role, harness FROM runs WHERE ticket=? AND status='running' ORDER BY id DESC").get(t.id) as any;
-      rows.push({ ...t, repo: r.name, group: GROUPS.findIndex(g => g[0] === groupIn(db, t)), run });
+      rows.push({ ...t, repo: r.path, name: r.name, group: GROUPS.findIndex(g => g[0] === groupIn(db, t)), run });
     }
     db.close();
   }
@@ -200,7 +202,7 @@ function hubBoard(all: boolean) {
     out += "\n " + c(1, head) + c(90, "─".repeat(Math.max(0, W - head.length))) + "\n";
     const mine = rows.filter(t => (t.story ?? "") === st);
     for (const repo of [...new Set(mine.map(t => t.repo))]) {
-      out += "   " + c(1, c(117, repo)) + "\n";
+      out += "   " + c(1, c(117, mine.find(t => t.repo === repo).name)) + "\n";
       for (const t of mine.filter(t => t.repo === repo).sort((x, y) => x.group - y.group)) {
         const [, , dot, col] = GROUPS[t.group];
         const right = `${t.status}${t.run ? `  ${t.run.role} ${t.run.harness}` : ""}`;
@@ -373,7 +375,15 @@ async function main(args: string[]) {
     if (o.once) return;
     await Bun.sleep(2000);
   }
+  if (cmd === "_launch") { // a herdr pane runs this: start the argv rig launch stored, in the foreground
+    const hub = openHub(), k = `launch.${pos[0]}`;
+    const cmdv = JSON.parse((hub.query("SELECT v FROM settings WHERE k=?").get(k) as any)?.v ?? die(`no launch ${pos[0]}`));
+    hub.run("DELETE FROM settings WHERE k=?", [k]); hub.close();
+    const p = Bun.spawn([...bin(cmdv[0]), ...cmdv.slice(1)], { stdio: ["inherit", "inherit", "inherit"] });
+    process.exit(await p.exited);
+  }
   if (cmd === "launch") {
+    if (pos[0] && !existsSync(pos[0])) die(`no folder ${pos[0]}`);
     const g = sh(["git", "rev-parse", "--path-format=absolute", "--git-common-dir"], pos[0] ?? die("usage: rig launch <repo path> --brief <file> [--harness h] [--model m] [--effort e] [--mode tab|pane]"));
     if (!g.ok) die(`${pos[0]} is not a git repo`);
     const root = dirname(g.out), name = repoName(root);
@@ -389,7 +399,7 @@ async function main(args: string[]) {
         [...(process.platform === "win32" ? [] : ["env", `RIG_ORCH=${orch}`]), ...bin(cmdv[0]), ...cmdv.slice(1)]);
       if (!h.launch) { if (h.kind) sh(["hc", "wait", pane, "--timeout", "60"]); else await Bun.sleep(8000); mux.push(pane, prompt); }
     } else {
-      const made = pane_ ? sh(["herdr", "pane", "split", "--current", "--direction", "right", "--ratio", "0.5", "--cwd", root, "--env", `RIG_ORCH=${orch}`, "--no-focus"])
+      const made = pane_ ? sh(["herdr", "pane", "split", ...(SELF ? ["--pane", SELF] : ["--current"]), "--direction", "right", "--ratio", "0.5", "--cwd", root, "--env", `RIG_ORCH=${orch}`, "--no-focus"])
         : sh(["herdr", "tab", "create", "--cwd", root, "--label", `${name} manager`, "--env", `RIG_ORCH=${orch}`, "--no-focus"]);
       if (!made.ok) die(`herdr: ${made.err || made.out}`);
       const res = JSON.parse(made.out).result;
@@ -397,12 +407,15 @@ async function main(args: string[]) {
       if (h.kind) {
         const s = sh(["herdr", "agent", "start", `${name}-manager-${sid.slice(0, 4)}`.toLowerCase(), "--kind", h.kind, "--pane", pane,
           "--timeout", h.launch ? "15000" : "60000", "--", ...cmdv.slice(1)]);
-        if (!s.ok && !h.launch) die(`herdr agent start: ${s.err || s.out}`);
+        if (!s.ok && !h.launch) { mux.close(pane); die(`herdr agent start: ${s.err || s.out}`); }
         if (!s.ok) console.log(`rig: ${hname} is still starting in pane ${pane} (a startup dialog, like folder trust, may need an answer)`);
         if (!h.launch) mux.push(pane, prompt);
       } else { // no herdr agent kind: the pane's shell runs it, then the prompt is typed once it reads idle (60s cap)
-        sh(["herdr", "pane", "run", pane, cmdv.map(a => `'${a.replace(/'/g, `'\\''`)}'`).join(" ")]);
+        // the shell only types `rig _launch <sid>`; the argv waits in the hub, so no shell quoting (same as dispatch's _pane)
+        openHub().run("INSERT OR REPLACE INTO settings VALUES(?,?)", [`launch.${sid}`, JSON.stringify(cmdv)]);
+        if (!sh(["herdr", "pane", "run", pane, `rig _launch ${sid}`]).ok) { mux.close(pane); die(`herdr: couldn't start ${hname} in pane ${pane}`); }
         for (let i = 0; i < 60 && !/"agent_status":"idle"/.test(sh(["herdr", "agent", "get", pane]).out); i++) await Bun.sleep(1000);
+        await Bun.sleep(1000);
         sh(["herdr", "pane", "send-text", pane, prompt]); sh(["herdr", "pane", "send-keys", pane, "enter"]);
       }
     }
@@ -416,7 +429,9 @@ async function main(args: string[]) {
     const rows = openHub().query("SELECT * FROM repos WHERE name=? OR path=?").all(name, name) as any[];
     if (rows.length !== 1) die(rows.length ? `${name} names ${rows.length} repos; use its path` : `no repo ${name} in the hub (rig new or rig launch adds it)`);
     if (!rows[0].manager) die(`${name} has no manager yet; start one with rig launch`);
+    if (!existsSync(join(rows[0].path, ".rig", "rig.db"))) die(`${rows[0].path} has no rig state any more (moved or deleted?)`);
     process.env.RIG_ROOT = rows[0].path;
+    delete process.env.RIG_RUN; // the orchestrator's own run id means nothing in that repo
     return main(["_hubtell", `manager:${rows[0].manager}`, ...pos.slice(1)]);
   }
 
@@ -693,11 +708,13 @@ async function main(args: string[]) {
       for (const kv of pos.slice(1)) {
         const [k, ...v] = kv.split("=");
         if (!["title", "body", "status", "review", "manager", "after", "base", "story"].includes(k)) die(`can't edit ${k}`);
+        const was = k === "status" ? ticket(t.id).status : null; // re-read: an earlier status= in this same edit counts
         db.run(`UPDATE tickets SET ${k}=? WHERE id=?`, [v.join("="), t.id]);
         // a registered repo tells the orchestrator when a ticket needs a decision or is ready
-        if (k === "status" && v.join("=") !== t.status && ["needs-you", "blocked", "review"].includes(v.join("="))) {
+        if (k === "status" && v.join("=") !== was && ["needs-you", "blocked", "review"].includes(v.join("="))) {
           const hub = openHub();
-          if (hub.query("SELECT 1 FROM repos WHERE path=?").get(root)) hub.run("INSERT INTO messages(repo, ticket, frm, too, body, at) VALUES(?,?,?,?,?,?)",
+          // only once an orchestrator has listened, so a machine that never orchestrates collects nothing
+          if (hub.query("SELECT 1 FROM repos WHERE path=?").get(root) && hub.query("SELECT 1 FROM settings WHERE k='listener.orchestrator'").get()) hub.run("INSERT INTO messages(repo, ticket, frm, too, body, at) VALUES(?,?,?,?,?,?)",
             [root, t.id, `${repoName(root)}:${t.id}`, "orchestrator", `${t.id} is ${v.join("=")}: ${t.title}`, now()]);
         }
         if (k === "status" && v.join("=") === "done") {
