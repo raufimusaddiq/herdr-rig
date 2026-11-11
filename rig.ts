@@ -117,8 +117,23 @@ export function open(path: string) {
   try { db.exec("ALTER TABLE runs ADD COLUMN effort TEXT"); } catch {}
   try { db.exec("ALTER TABLE tickets ADD COLUMN after TEXT"); } catch {} // "T-3,T-4": waits for these
   try { db.exec("ALTER TABLE tickets ADD COLUMN base TEXT"); } catch {} // branch it starts from and lands on
+  try { db.exec("ALTER TABLE tickets ADD COLUMN story TEXT"); } catch {} // groups tickets across repos on the hub board
   return db;
 }
+// ---- hub: <RIG_HOME>/.rig/hub.db, one per machine: the repos an orchestrator sees, and the messages meant for it
+export function openHub() {
+  const path = join(process.env.RIG_HOME ?? homedir(), ".rig", "hub.db");
+  mkdirSync(dirname(path), { recursive: true });
+  const db = new Database(path, { create: true });
+  db.exec(`PRAGMA busy_timeout=5000; PRAGMA journal_mode=WAL;
+    CREATE TABLE IF NOT EXISTS repos(path TEXT PRIMARY KEY, name TEXT, manager TEXT, added TEXT);
+    CREATE TABLE IF NOT EXISTS messages(id INTEGER PRIMARY KEY, repo TEXT, ticket TEXT, frm TEXT, too TEXT, body TEXT,
+      seen INTEGER DEFAULT 0, at TEXT);
+    CREATE TABLE IF NOT EXISTS settings(k TEXT PRIMARY KEY, v TEXT);`);
+  return db;
+}
+const repoName = (p: string) => p.split(/[\\/]/).pop()!;
+const register = (root: string) => openHub().run("INSERT INTO repos(path, name, added) VALUES(?,?,?) ON CONFLICT(path) DO NOTHING", [root, repoName(root), now()]);
 
 // ---- terminal backend: herdr CLI (HERDR_PANE_ID) or herdr desktop app via hc + herdr-app (HC_TERMINAL_ID)
 // --hc: the board mod runs rig from the app, which has no terminal env
@@ -258,7 +273,7 @@ async function main(args: string[]) {
     process.exit(await p.exited);
   }
   const { values: o, positionals: [cmd, ...pos] } = parseArgs({ args, allowPositionals: true, strict: false, options: {
-    body: { type: "string" }, of: { type: "string" }, after: { type: "string" }, base: { type: "string" }, role: { type: "string" }, harness: { type: "string" }, model: { type: "string" }, effort: { type: "string" },
+    body: { type: "string" }, of: { type: "string" }, after: { type: "string" }, base: { type: "string" }, story: { type: "string" }, brief: { type: "string" }, hub: { type: "boolean" }, role: { type: "string" }, harness: { type: "string" }, model: { type: "string" }, effort: { type: "string" },
     mode: { type: "string" }, worktree: { type: "string" }, "no-worktree": { type: "boolean" }, review: { type: "boolean" }, now: { type: "boolean" },
     mine: { type: "boolean" }, all: { type: "boolean" }, wait: { type: "boolean" }, open: { type: "boolean" },
     tab: { type: "boolean" }, once: { type: "boolean" }, force: { type: "boolean" }, json: { type: "boolean" }, tui: { type: "boolean" } } });
@@ -554,17 +569,18 @@ async function main(args: string[]) {
       const body = o.body === "-" ? await Bun.stdin.text() : (o.body as string) ?? "";
       const n = db.transaction(() => {
         const n = ((db.query("SELECT MAX(CAST(SUBSTR(id, 3) AS INTEGER)) n FROM tickets").get() as any).n ?? 0) + 1;
-        db.run("INSERT INTO tickets(id,title,body,manager,review,after,base,created) VALUES(?,?,?,?,?,?,?,?)",
-          [`T-${n}`, pos.join(" "), body, me, o.review ? 1 : 0, (o.after as string) ?? null, (o.base as string) ?? here(), now()]);
+        db.run("INSERT INTO tickets(id,title,body,manager,review,after,base,story,created) VALUES(?,?,?,?,?,?,?,?,?)",
+          [`T-${n}`, pos.join(" "), body, me, o.review ? 1 : 0, (o.after as string) ?? null, (o.base as string) ?? here(), (o.story as string) ?? null, now()]);
         return n;
       }).immediate();
+      register(root);
       return console.log(`T-${n}`);
     }
     case "edit": {
       const t = ticket(pos[0]);
       for (const kv of pos.slice(1)) {
         const [k, ...v] = kv.split("=");
-        if (!["title", "body", "status", "review", "manager", "after", "base"].includes(k)) die(`can't edit ${k}`);
+        if (!["title", "body", "status", "review", "manager", "after", "base", "story"].includes(k)) die(`can't edit ${k}`);
         db.run(`UPDATE tickets SET ${k}=? WHERE id=?`, [v.join("="), t.id]);
         if (k === "status" && v.join("=") === "done") {
           closeRuns(t.id);
@@ -585,7 +601,7 @@ async function main(args: string[]) {
     }
     case "show": {
       const t = ticket(pos[0]);
-      console.log(`# ${t.id}: ${t.title}\nstatus: ${t.status} · review: ${t.review ? "yes" : "no"} · manager: ${t.manager}`
+      console.log(`# ${t.id}: ${t.title}\nstatus: ${t.status} · review: ${t.review ? "yes" : "no"} · manager: ${t.manager}${t.story ? ` · story: ${t.story}` : ""}`
         + `${t.worktree ? `\nworktree: ${t.worktree} (branch ${t.branch} from ${base(t)})` : ""}\n\n${t.body}\n`);
       const msgs = db.query("SELECT * FROM messages WHERE ticket=? ORDER BY id DESC LIMIT 20").all(t.id) as any[];
       if (msgs.length) console.log("## messages\n" + msgs.reverse().map(m => `${m.at} ${m.frm} → ${m.too}: ${m.body}`).join("\n"));

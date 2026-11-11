@@ -2,7 +2,7 @@ import { test, expect, afterAll } from "bun:test";
 import { mkdtempSync, mkdirSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { argv, HARNESSES, slot, worktreePlan, deep } from "./rig.ts";
+import { argv, HARNESSES, slot, worktreePlan, deep, openHub } from "./rig.ts";
 
 // every temp repo and home a test makes goes when the run ends
 const made: string[] = [];
@@ -13,6 +13,20 @@ afterAll(() => { for (const d of made) try { rmSync(d, { recursive: true, force:
 // A decoy RIG_ROOT proves that: the last test checks that nothing was written there.
 const decoy = tmp("rig-decoy-");
 process.env.RIG_ROOT = decoy;
+// `rig new` registers each repo in the hub (<RIG_HOME>/.rig/hub.db); keep it out of the real home
+const hubHome = tmp("rig-hubhome-");
+process.env.RIG_HOME = hubHome;
+const mkrepo = () => {
+  const repo = tmp("rig-");
+  Bun.spawnSync(["git", "init", "-q", repo]);
+  Bun.spawnSync(["git", "-C", repo, "commit", "-q", "--allow-empty", "-m", "init"]);
+  return repo;
+};
+const rigIn = (cwd: string, args: string[], env: Record<string, string> = {}) => {
+  const p = Bun.spawnSync(["bun", join(import.meta.dir, "rig.ts"), ...args],
+    { cwd, env: { ...process.env, HERDR_PANE_ID: "", HC_TERMINAL_ID: "", RIG_RUN: "", RIG_ROOT: "", ...env } });
+  return p.stdout.toString().trim() + p.stderr.toString().trim();
+};
 
 test("argv expands model and sid, drops model when unset", () => {
   expect(argv(HARNESSES.claude, "headless", "opus", "S", "go")).toEqual(
@@ -144,6 +158,17 @@ test("the board shows the running worker, not a reviewer that already closed", (
   expect(Bun.spawnSync(["bun", join(import.meta.dir, "rig.ts"), "inbox"], { cwd: repo, env: { ...env, RIG_RUN: "1" } }).stdout.toString()).toContain("fix it");
   rig("close", "T-1");
 }, 30000);
+
+test("rig new registers the repo in the hub and keeps its story", () => {
+  const repo = mkrepo();
+  expect(rigIn(repo, ["new", "a", "--story", "S-1"])).toBe("T-1");
+  rigIn(repo, ["new", "b"]);
+  expect(rigIn(repo, ["show", "T-1"])).toContain("story: S-1");
+  rigIn(repo, ["edit", "T-2", "story=S-2"]);
+  expect(rigIn(repo, ["show", "T-2"])).toContain("story: S-2");
+  const rows = openHub().query("SELECT * FROM repos WHERE name=?").all(repo.split("/").pop()!) as any[];
+  expect(rows.length).toBe(1); // idempotent across rig new calls
+});
 
 test("no test followed the inherited RIG_ROOT", () => {
   expect(require("node:fs").existsSync(join(decoy, ".rig"))).toBe(false);
