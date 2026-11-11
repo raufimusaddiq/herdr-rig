@@ -2,6 +2,12 @@
 
 All notable changes to this project are documented here. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and versions follow [Semantic Versioning](https://semver.org/).
 
+## [Unreleased]
+
+### Fixed
+- The herdr app board showed "cannot run bun" when the app was started from the dock without bun on its PATH. rig now hands the board the bun it runs on, and every command rig starts itself uses that bun too.
+- `--after "T-3 T-4"` (space-separated) queued forever: the list split on the letter "s" instead of whitespace.
+
 ## [0.2.0] - 2026-11-09
 
 ### Added

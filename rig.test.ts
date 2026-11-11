@@ -60,6 +60,8 @@ test("base branch, squash landing, --after and cleanup", async () => {
   expect(rig("new")).toContain("usage"); // no title, no ticket
   expect(rig("new", "a")).toBe("T-1");
   expect(rig("new", "b", "--after", "T-1", "--base", "main")).toBe("T-2");
+  expect(rig("new", "c", "--after", "T-1 T-2")).toBe("T-3"); // space-separated list
+  expect(rig("board", "--json")).toContain('"waiting":["T-1 (open)","T-2 (open)"]');
   // the worker commits a file on its branch
   rig("set", "harness.fake", JSON.stringify({ model: [], headless: ["bun", "-e",
     "require('fs').writeFileSync('f','x'); for (const a of [['add','f'],['commit','-qm','f']]) Bun.spawnSync(['git',...a])"] }));

@@ -1,6 +1,6 @@
 // rig board for the Herdr app: tickets grouped by what they need from you. Data comes from `rig board --json`;
 // live agent status and icons come from Herdr itself (terminals()), so those update without polling.
-// props: { rig: "<path to rig.ts>", root: "<repo>" }. Opened by `rig board --open` as a pane beside the manager.
+// props: { rig: "<path to rig.ts>", root: "<repo>", bun: "<bun binary>" } (an app started from the dock may not have bun on PATH). Opened by `rig board --open` as a pane beside the manager.
 // Look: neutral and dense. The only color is the small status mark.
 
 import { View, div, svg, image } from "gpui-kit";
@@ -46,7 +46,9 @@ export default class RigBoard extends View {
     const p = props() ?? {};
     cx.spawn(async (cx) => {
       try {
-        const r = await exec("bun", [p.rig, "board", "--json", "--hc"], { cwd: p.root });
+        const args = [p.rig, "board", "--json", "--hc"];
+        // p.bun is the bun rig ran on; after a bun upgrade that path can be gone, so fall back to PATH
+        const r = await exec(p.bun ?? "bun", args, { cwd: p.root }).catch(() => exec("bun", args, { cwd: p.root }));
         if (r.code) throw new Error(r.stderr.trim() || `rig exited ${r.code}`);
         if (r.stdout === this.raw && !this.error) return; // nothing changed: skip the redraw
         this.raw = r.stdout;
