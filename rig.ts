@@ -6,6 +6,7 @@ import { existsSync, mkdirSync, readFileSync, writeFileSync, openSync, rmSync, r
 import { join, dirname, resolve } from "node:path";
 import { homedir } from "node:os";
 
+// rig's own bun, never "bun" from PATH: herdr-app runs argv without a shell, and an app started from the dock may lack it
 const SKILLS = join(import.meta.dir, "skills").replace(/\\/g, "/");
 const sh = (cmd: string[], cwd?: string) => {
   const p = Bun.spawnSync(cmd, { cwd, stdout: "pipe", stderr: "pipe", windowsHide: true });
@@ -295,7 +296,7 @@ export const mux = HC ? {
     const r = place === "space" ? sh(["herdr-app", "do", "space.new", "--name", name, "--folder", cwd, "--argv", JSON.stringify(cmd)])
       : place === "tab"
       ? sh(["herdr-app", "do", "tab.new", "--name", name, "--folder", cwd, "--argv", JSON.stringify(cmd), ...(at ? ["--space", at.space] : [])])
-      : at ? sh(["herdr-app", "do", "pane.split", "--direction", place, "--pane", at.pane, "--argv", JSON.stringify(["bun", import.meta.path, "_exec", cwd, ...cmd])])
+      : at ? sh(["herdr-app", "do", "pane.split", "--direction", place, "--pane", at.pane, "--argv", JSON.stringify([process.execPath, import.meta.path, "_exec", cwd, ...cmd])])
       : sh(["herdr-app", "do", "terminal.open", "--folder", cwd, "--place", place, "--argv", JSON.stringify(cmd)]);
     const t = r.ok ? JSON.parse(r.out).terminal : undefined;
     if (!t && anchor !== SELF) return this.open_(place === "down" ? "right" : place, cwd, name, cmd); // anchor gone: start beside the manager
@@ -377,7 +378,7 @@ async function main(args: string[]) {
   if (cmd === "install") return install(pos);
   if (cmd === "update") { // a git checkout (bun link) pulls; an install from GitHub reinstalls. Skills follow on their own.
     const git = existsSync(join(import.meta.dir, ".git"));
-    const p = Bun.spawnSync(git ? ["git", "-C", import.meta.dir, "pull", "--ff-only"] : ["bun", "add", "-g", "github:zanuartri/herdr-rig"],
+    const p = Bun.spawnSync(git ? ["git", "-C", import.meta.dir, "pull", "--ff-only"] : [process.execPath, "add", "-g", "github:zanuartri/herdr-rig"],
       { stdio: ["ignore", "inherit", "inherit"] });
     if (p.exitCode) process.exit(p.exitCode);
     // the board mod is a copy, so refresh it where the desktop app has it
@@ -391,7 +392,7 @@ async function main(args: string[]) {
     const cwd = process.cwd(), tab = !!o.tab;
     if (HC && !o.tui && existsSync(join(APP_HOME(), "mods", "rig-board", "main.js")))
       return console.log(mux.open(tab ? "tab" : "right", cwd, "rig hub", { mod: "rig-board", props: { rig: import.meta.path.replace(/\\/g, "/"), root: cwd.replace(/\\/g, "/"), bun: process.execPath, hub: true } }));
-    if (HC) return console.log(mux.open(tab ? "tab" : "right", cwd, "rig hub", ["bun", import.meta.path, "board", "--hub"]));
+    if (HC) return console.log(mux.open(tab ? "tab" : "right", cwd, "rig hub", [process.execPath, import.meta.path, "board", "--hub"]));
     const made = tab ? sh(["herdr", "tab", "create", "--cwd", cwd, "--label", "rig hub", "--no-focus"])
       : sh(["herdr", "pane", "split", "--current", "--direction", "right", "--ratio", "0.5", "--cwd", cwd, "--no-focus"]);
     if (!made.ok) die(`herdr: ${made.err || made.out}`);
@@ -493,7 +494,7 @@ async function main(args: string[]) {
     ? sh(["taskkill", "/T", "/F", "/PID", String(pid)]) : (() => { try { process.kill(-pid, "SIGTERM"); } catch {} })();
 
   const background = (sub: string, runId: number, cwd: string, asRun = true) => {
-    const p = Bun.spawn(["bun", import.meta.path, sub, String(runId)], { cwd, env: { ...process.env, ...(asRun ? { RIG_RUN: String(runId) } : {}), RIG_ROOT: root },
+    const p = Bun.spawn([process.execPath, import.meta.path, sub, String(runId)], { cwd, env: { ...process.env, ...(asRun ? { RIG_RUN: String(runId) } : {}), RIG_ROOT: root },
       stdio: ["ignore", "ignore", "ignore"], detached: true, windowsHide: true });
     p.unref();
     return p.pid;
@@ -656,7 +657,7 @@ async function main(args: string[]) {
   function openBoard(tab = false) {
     const below = tab ? undefined : column().at(-1);
     // the board runs in its own pane, so it is told whose tickets "mine" means
-    const cmdv = ["bun", import.meta.path, "board", ...(o.mine ? ["--mine", "--of", me] : [])];
+    const cmdv = [process.execPath, import.meta.path, "board", ...(o.mine ? ["--mine", "--of", me] : [])];
     // desktop: the native mod when installed, unless the person picked the terminal board (board=tui or --tui)
     const native = HC && !o.tui && get("board") !== "tui" && existsSync(join(APP_HOME(), "mods", "rig-board", "main.js"));
     let pane: string;

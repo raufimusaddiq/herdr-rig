@@ -1,7 +1,7 @@
 import { test, expect, afterAll } from "bun:test";
 import { mkdtempSync, mkdirSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { join, basename } from "node:path";
 import { argv, HARNESSES, slot, worktreePlan, deep, openHub, launchCmd } from "./rig.ts";
 
 // every temp repo and home a test makes goes when the run ends
@@ -167,7 +167,7 @@ test("rig new registers the repo in the hub and keeps its story", () => {
   expect(rigIn(repo, ["show", "T-1"])).toContain("story: S-1");
   rigIn(repo, ["edit", "T-2", "story=S-2"]);
   expect(rigIn(repo, ["show", "T-2"])).toContain("story: S-2");
-  const rows = openHub().query("SELECT * FROM repos WHERE name=?").all(repo.split("/").pop()!) as any[];
+  const rows = openHub().query("SELECT * FROM repos WHERE name=?").all(basename(repo)) as any[];
   expect(rows.length).toBe(1); // idempotent across rig new calls
 });
 
@@ -175,7 +175,7 @@ test("hub: status events and say orchestrator reach the hub inbox; tell <repo>:m
   const a = mkrepo(), b = mkrepo(), out = tmp("rig-out-"); // the orchestrator runs from a folder that is not a repo
   rigIn(a, ["new", "x"]); rigIn(b, ["new", "y"]);
   rigIn(out, ["inbox", "--hub"]); // drain what other tests left in the shared hub
-  const quiet = mkrepo(), qn = quiet.split("/").pop()!;
+  const quiet = mkrepo(), qn = basename(quiet);
   rigIn(quiet, ["new", "q"]);
   if (!openHub().query("SELECT 1 FROM settings WHERE k='listener.orchestrator'").get()) { // no orchestrator yet: no events
     rigIn(quiet, ["edit", "T-1", "status=review"]);
@@ -186,21 +186,21 @@ test("hub: status events and say orchestrator reach the hub inbox; tell <repo>:m
   await Bun.sleep(500);
   rigIn(b, ["edit", "T-1", "status=needs-you"]);
   await listener.exited;
-  expect(await new Response(listener.stdout).text()).toContain(`${b.split("/").pop()}:T-1 [T-1]: T-1 is needs-you: y`);
+  expect(await new Response(listener.stdout).text()).toContain(`${basename(b)}:T-1 [T-1]: T-1 is needs-you: y`);
   rigIn(a, ["edit", "T-1", "status=working"]); // not an event
   rigIn(a, ["say", "orchestrator", "Q: ship A first?"]);
   const inbox = rigIn(out, ["inbox", "--hub"]);
-  expect(inbox).toContain(`${a.split("/").pop()}:manager: Q: ship A first?`);
+  expect(inbox).toContain(`${basename(a)}:manager: Q: ship A first?`);
   expect(inbox).not.toContain("working");
-  expect(rigIn(out, ["tell", `${a.split("/").pop()}:manager`, "go"])).toContain("no manager yet");
-  openHub().run("UPDATE repos SET manager='local' WHERE name=?", [a.split("/").pop()!]);
-  rigIn(out, ["tell", `${a.split("/").pop()}:manager`, "yes, A first"]);
+  expect(rigIn(out, ["tell", `${basename(a)}:manager`, "go"])).toContain("no manager yet");
+  openHub().run("UPDATE repos SET manager='local' WHERE name=?", [basename(a)]);
+  rigIn(out, ["tell", `${basename(a)}:manager`, "yes, A first"]);
   expect(rigIn(a, ["inbox"])).toContain("orchestrator: yes, A first");
 }, 30000);
 
 test("board --hub shows every registered repo, by story then repo", () => {
   const a = mkrepo(), b = mkrepo(), out = tmp("rig-out-");
-  const [na, nb] = [a, b].map(r => r.split("/").pop()!);
+  const [na, nb] = [a, b].map(r => basename(r));
   rigIn(a, ["new", "api change", "--story", "S-HUB"]);
   rigIn(b, ["new", "client change", "--story", "S-HUB"]);
   rigIn(b, ["new", "loose end"]);
