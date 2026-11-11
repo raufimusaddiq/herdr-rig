@@ -2,7 +2,7 @@ import { test, expect, afterAll } from "bun:test";
 import { mkdtempSync, mkdirSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { argv, HARNESSES, slot, worktreePlan, deep, openHub } from "./rig.ts";
+import { argv, HARNESSES, slot, worktreePlan, deep, openHub, launchCmd } from "./rig.ts";
 
 // every temp repo and home a test makes goes when the run ends
 const made: string[] = [];
@@ -211,6 +211,19 @@ test("board --hub shows every registered repo, by story then repo", () => {
   expect(board).toContain("needs-you");
   expect(board).not.toContain("finished");
   expect(rigIn(out, ["board", "--hub", "--once", "--all"])).toContain("finished");
+});
+
+test("launch: the manager starts on its skill and brief; bad input stops before any pane opens", () => {
+  const { prompt, cmd } = launchCmd(HARNESSES.claude, "/b/brief.md", "opus", "", "S");
+  expect(cmd).toEqual(["claude", "--dangerously-skip-permissions", "--session-id", "S", "--model", "opus", prompt]);
+  expect(prompt).toContain("rig skill manager");
+  expect(prompt).toContain("/b/brief.md");
+  expect(prompt).toContain("rig say orchestrator");
+  expect(launchCmd(HARNESSES.commandcode, "/b.md", "", "", "S").cmd).not.toContain(prompt); // typed in after start instead
+  const out = tmp("rig-out-"), repo = mkrepo();
+  expect(rigIn(out, ["launch", out, "--brief", "x"])).toContain("is not a git repo");
+  expect(rigIn(out, ["launch", repo])).toContain("--brief <file> is required");
+  expect(rigIn(out, ["launch", repo, "--brief", "nope.md"])).toContain("no brief at");
 });
 
 test("no test followed the inherited RIG_ROOT", () => {

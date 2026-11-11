@@ -3,7 +3,7 @@
 import { Database } from "bun:sqlite";
 import { parseArgs } from "node:util";
 import { existsSync, mkdirSync, readFileSync, writeFileSync, openSync, rmSync, readdirSync } from "node:fs";
-import { join, dirname } from "node:path";
+import { join, dirname, resolve } from "node:path";
 import { homedir } from "node:os";
 
 const SKILLS = join(import.meta.dir, "skills").replace(/\\/g, "/");
@@ -84,6 +84,13 @@ export function argv(h: any, kind: "interactive" | "headless" | "resume", model:
   }
   if (prompt !== undefined) out.push(prompt);
   return out;
+}
+
+/** a repo's manager, started by the orchestrator: the manager skill, its brief, and who it reports to */
+export function launchCmd(h: any, brief: string, model: string, effort: string, sid: string) {
+  const prompt = `You are the rig manager for this repo, started by an orchestrator. Run \`rig skill manager\` and follow it. `
+    + `Your brief: ${brief}. Send questions and status to the orchestrator with \`rig say orchestrator "…"\`.`;
+  return { prompt, cmd: argv(h, "interactive", model, sid, h.launch ? prompt : undefined, effort) };
 }
 
 /** Windows: resolve npm `.cmd` shims to the real exe/script so args survive and kills reach the real process. */
@@ -365,6 +372,43 @@ async function main(args: string[]) {
     process.stdout.write(o.once ? text : (first ? "\x1b[2J" : "") + "\x1b[H" + text.replace(/\n/g, "\x1b[K\n") + "\x1b[J");
     if (o.once) return;
     await Bun.sleep(2000);
+  }
+  if (cmd === "launch") {
+    const g = sh(["git", "rev-parse", "--path-format=absolute", "--git-common-dir"], pos[0] ?? die("usage: rig launch <repo path> --brief <file> [--harness h] [--model m] [--effort e] [--mode tab|pane]"));
+    if (!g.ok) die(`${pos[0]} is not a git repo`);
+    const root = dirname(g.out), name = repoName(root);
+    const brief = resolve((o.brief as string) ?? die("--brief <file> is required"));
+    if (!existsSync(brief)) die(`no brief at ${brief}`);
+    const hname = (o.harness as string) ?? "claude";
+    const h = HARNESSES[hname] ?? die(`unknown harness ${hname}`); // ponytail: built-ins only; per-repo harness.<name> overrides are not read here
+    const sid = crypto.randomUUID(), orch = SELF || "local", pane_ = o.mode === "pane";
+    const { prompt, cmd: cmdv } = launchCmd(h, brief, (o.model as string) ?? "", (o.effort as string) ?? "", sid);
+    let pane: string;
+    if (HC) { // herdr-app opens argv with no env, so RIG_ORCH rides in front of it (the prompt says the same on Windows)
+      pane = mux.open(pane_ ? "right" : "tab", root, `${name} manager`,
+        [...(process.platform === "win32" ? [] : ["env", `RIG_ORCH=${orch}`]), ...bin(cmdv[0]), ...cmdv.slice(1)]);
+      if (!h.launch) { if (h.kind) sh(["hc", "wait", pane, "--timeout", "60"]); else await Bun.sleep(8000); mux.push(pane, prompt); }
+    } else {
+      const made = pane_ ? sh(["herdr", "pane", "split", "--current", "--direction", "right", "--ratio", "0.5", "--cwd", root, "--env", `RIG_ORCH=${orch}`, "--no-focus"])
+        : sh(["herdr", "tab", "create", "--cwd", root, "--label", `${name} manager`, "--env", `RIG_ORCH=${orch}`, "--no-focus"]);
+      if (!made.ok) die(`herdr: ${made.err || made.out}`);
+      const res = JSON.parse(made.out).result;
+      pane = (pane_ ? res.pane.pane_id : deep(res, "root_pane")?.pane_id ?? deep(res, "pane_id")) as string;
+      if (h.kind) {
+        const s = sh(["herdr", "agent", "start", `${name}-manager-${sid.slice(0, 4)}`.toLowerCase(), "--kind", h.kind, "--pane", pane,
+          "--timeout", h.launch ? "15000" : "60000", "--", ...cmdv.slice(1)]);
+        if (!s.ok && !h.launch) die(`herdr agent start: ${s.err || s.out}`);
+        if (!s.ok) console.log(`rig: ${hname} is still starting in pane ${pane} (a startup dialog, like folder trust, may need an answer)`);
+        if (!h.launch) mux.push(pane, prompt);
+      } else { // no herdr agent kind: the pane's shell runs it, then the prompt is typed once it reads idle (60s cap)
+        sh(["herdr", "pane", "run", pane, cmdv.map(a => `'${a.replace(/'/g, `'\\''`)}'`).join(" ")]);
+        for (let i = 0; i < 60 && !/"agent_status":"idle"/.test(sh(["herdr", "agent", "get", pane]).out); i++) await Bun.sleep(1000);
+        sh(["herdr", "pane", "send-text", pane, prompt]); sh(["herdr", "pane", "send-keys", pane, "enter"]);
+      }
+    }
+    register(root);
+    openHub().run("UPDATE repos SET manager=? WHERE path=?", [pane, root]);
+    return console.log(`manager for ${name} in ${HC ? "terminal" : "pane"} ${pane}`);
   }
   if (cmd === "inbox" && o.hub) return readInbox(openHub(), "orchestrator", !!o.wait);
   if (cmd === "tell" && /:manager$/.test(pos[0] ?? "")) { // <repo name or path>:manager → that repo's manager pane
