@@ -45,9 +45,13 @@ export default class RigBoard extends View {
 
   refresh(cx) {
     const p = props() ?? {};
+    if (this.busy) return; // a slow refresh (many repos on the hub) must not stack up or land out of order
+    this.busy = true;
     cx.spawn(async (cx) => {
       try {
-        const r = await exec(p.bun ?? "bun", [p.rig, "board", "--json", "--hc", ...(p.hub ? ["--hub"] : [])], { cwd: p.root });
+        const args = [p.rig, "board", "--json", "--hc", ...(p.hub ? ["--hub"] : [])];
+        // p.bun is the bun rig ran on; after a bun upgrade that path can be gone, so fall back to PATH
+        const r = await exec(p.bun ?? "bun", args, { cwd: p.root }).catch(() => exec("bun", args, { cwd: p.root }));
         if (r.code) throw new Error(r.stderr.trim() || `rig exited ${r.code}`);
         if (r.stdout === this.raw && !this.error) return; // nothing changed: skip the redraw
         this.raw = r.stdout;
@@ -56,6 +60,8 @@ export default class RigBoard extends View {
         this.alert();
       } catch (e) {
         this.error = String(e.message ?? e);
+      } finally {
+        this.busy = false;
       }
       cx.notify();
     });
@@ -64,11 +70,11 @@ export default class RigBoard extends View {
   // a toast the first time a ticket needs you; clicking it goes to the manager
   alert() {
     for (const x of this.flat().find((g) => g.title === "Needs you")?.tickets ?? []) {
-      const key = `${x.repo ?? ""}${x.id}:${x.noteAt}`;
+      const key = `${x.repoPath ?? ""}${x.id}:${x.noteAt}`;
       if (this.seen.has(key)) continue;
       this.seen.add(key);
       const manager = this.manager(x);
-      notify({ title: `${x.id} needs you`, body: x.note || x.title, level: "warning",
+      notify({ title: `${x.repo ? `${x.repo} ` : ""}${x.id} needs you`, body: x.note || x.title, level: "warning",
         ...(manager ? { action: { name: "pane.focus", args: { terminal: manager } } } : {}) });
     }
     localStorage.setItem("seen", JSON.stringify([...this.seen].slice(-200)));
@@ -78,7 +84,7 @@ export default class RigBoard extends View {
   flat() {
     if (!this.data?.hub) return ORDER.map((n) => this.data?.groups.find((g) => g.title === n)).filter(Boolean);
     return ORDER.map((title) => ({ title, tickets: this.data.stories.flatMap((s) => s.repos.flatMap((r) =>
-      (r.groups.find((g) => g.title === title)?.tickets ?? []).map((x) => ({ ...x, repo: r.name }))) ) }));
+      (r.groups.find((g) => g.title === title)?.tickets ?? []).map((x) => ({ ...x, repo: r.name, repoPath: r.path }))) ) }));
   }
 
   manager(x) { return x.manager?.startsWith("manager:") ? x.manager.slice(8) : null; }

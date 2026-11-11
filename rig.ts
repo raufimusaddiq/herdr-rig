@@ -6,7 +6,8 @@ import { existsSync, mkdirSync, readFileSync, writeFileSync, openSync, rmSync, r
 import { join, dirname, resolve } from "node:path";
 import { homedir } from "node:os";
 
-// rig's own bun, never "bun" from PATH: herdr-app runs argv without a shell, and an app started from the dock may lack it
+// argv rig starts itself uses rig's own bun (process.execPath), not "bun" from PATH: herdr-app runs argv without a shell,
+// and an app started from the dock may lack it. Text typed into a person's shell (`rig …`) still uses their PATH.
 const SKILLS = join(import.meta.dir, "skills").replace(/\\/g, "/");
 const sh = (cmd: string[], cwd?: string) => {
   const p = Bun.spawnSync(cmd, { cwd, stdout: "pipe", stderr: "pipe", windowsHide: true });
@@ -197,7 +198,7 @@ function hubBoard(all: boolean) {
   }
   let out = " " + c(1, c(214, "▲ rig")) + "  hub  " + c(90, new Date().toTimeString().slice(0, 5)) + "\n";
   if (!rows.length) return out + c(90, "   no open tickets in any registered repo\n");
-  const stories = [...new Set(rows.map(t => t.story ?? ""))].sort((x, y) => !x ? 1 : !y ? -1 : x.localeCompare(y));
+  const stories = [...new Set(rows.map(t => t.story ?? ""))].sort((x, y) => !x ? 1 : !y ? -1 : x.localeCompare(y, undefined, { numeric: true }));
   for (const st of stories) {
     const head = `${st ? `STORY ${st}` : "NO STORY"} `;
     out += "\n " + c(1, head) + c(90, "─".repeat(Math.max(0, W - head.length))) + "\n";
@@ -215,17 +216,17 @@ function hubBoard(all: boolean) {
 }
 
 // the hub board as data, for the herdr-app mod: each repo's own `board --json` (same cards, live status), regrouped by story
-// ponytail: one rig process per repo per refresh; fine for a handful of repos
-function hubJson(hc: boolean) {
+// ponytail: one rig process per repo per refresh (run in parallel); fine for a handful of repos
+async function hubJson(hc: boolean) {
   const hub = openHub(), repos = hub.query("SELECT * FROM repos ORDER BY name").all() as any[];
   hub.close();
-  const per = repos.filter(r => existsSync(join(r.path, ".rig", "rig.db"))).map(r => {
-    const p = Bun.spawnSync([process.execPath, import.meta.path, "board", "--json", ...(hc ? ["--hc"] : [])],
+  const per = (await Promise.all(repos.filter(r => existsSync(join(r.path, ".rig", "rig.db"))).map(async r => {
+    const p = Bun.spawn([process.execPath, import.meta.path, "board", "--json", ...(hc ? ["--hc"] : [])],
       { cwd: r.path, env: { ...process.env, RIG_ROOT: r.path, RIG_RUN: "" }, stdout: "pipe", stderr: "ignore", windowsHide: true });
-    return { name: r.name, path: r.path, data: jsonOf(p.stdout.toString()) };
-  }).filter(r => r.data);
+    return { name: r.name, path: r.path, data: jsonOf(await new Response(p.stdout).text()) };
+  }))).filter(r => r.data);
   const stories = [...new Set(per.flatMap(r => r.data.groups.flatMap((g: any) => g.tickets.map((t: any) => t.story ?? ""))))]
-    .sort((x, y) => !x ? 1 : !y ? -1 : x.localeCompare(y));
+    .sort((x, y) => !x ? 1 : !y ? -1 : x.localeCompare(y, undefined, { numeric: true }));
   return { hub: true, stories: stories.map(st => ({ story: st || null, repos: per.map(r => ({ name: r.name, path: r.path,
     groups: r.data.groups.map((g: any) => ({ title: g.title, tickets: g.tickets.filter((t: any) => (t.story ?? "") === st) })).filter((g: any) => g.tickets.length) }))
     .filter(r => r.groups.length) })) };
@@ -387,7 +388,7 @@ async function main(args: string[]) {
   }
 
   // the orchestrator's commands: they work from any folder, not only inside a repo
-  if (cmd === "board" && o.hub && o.json) return console.log(JSON.stringify(hubJson(HC)));
+  if (cmd === "board" && o.hub && o.json) return console.log(JSON.stringify(await hubJson(HC)));
   if (cmd === "board" && o.hub && (o.open || o.tab)) { // beside this pane (or a tab): the app mod when installed, else the terminal board
     const cwd = process.cwd(), tab = !!o.tab;
     if (HC && !o.tui && existsSync(join(APP_HOME(), "mods", "rig-board", "main.js")))

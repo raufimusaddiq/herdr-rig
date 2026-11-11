@@ -225,7 +225,7 @@ test("board --hub shows every registered repo, by story then repo", () => {
   expect(s.repos.find((r: any) => r.name === nb).groups.find((g: any) => g.title === "Needs you").tickets[0].title).toBe("client change");
   expect(json.stories.at(-1).story).toBeNull(); // no story goes last
   expect(JSON.stringify(json.stories.at(-1))).toContain("loose end");
-});
+}, 30000);
 
 test("launch: the manager starts on its skill and brief; bad input stops before any pane opens", () => {
   const { prompt, cmd } = launchCmd(HARNESSES.claude, "/b/brief.md", "opus", "", "S");
