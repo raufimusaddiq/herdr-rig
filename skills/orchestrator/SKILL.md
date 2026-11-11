@@ -16,7 +16,9 @@ Turn the request into one brief per repo, plus an order:
 - **Merge order**: which repo must land first (usually the provider before its consumers, config before the code that reads it).
 - **A story id** (`S-<n>` or the user's ticket) so every repo's tickets group together on the board.
 
-Ask the user only what the code can't tell you. Confirm the plan in one round before starting managers.
+- **Setup for each manager**: worker and reviewer harness (and model/effort if the user cares), `mode`, `worktree`, `autonomy`, `merge` (see step 0 of `rig skill manager`). Skip a repo whose `rig get setup` already says `done` unless the user wants to change it.
+
+Ask the user only what the code can't tell you. Confirm the plan, setup included, in one round before starting managers.
 
 Write each brief to a file:
 
@@ -29,6 +31,7 @@ Order: lands before/after <repo>; wait for <repo> before starting X
 Acceptance / Verify: observable checks and the commands that prove them
 Tickets: use `rig new "…" --story S-12` for every ticket
 Report: send questions and status with `rig say orchestrator "…"`
+Setup: worker.harness=claude reviewer.harness=codex mode=pane worktree=on autonomy=review merge=local   (omit to keep the repo's saved setup)
 ```
 
 ## 2. Start managers
@@ -49,6 +52,7 @@ Handle it, then start the listener again. Keep one listener; a newer one replace
 
 - Answer a manager with `rig tell <repo>:manager "…"` (use the repo path instead of the name if two repos share a name). Decide anything the plan, the contract or the code already settles, and say what you chose in one line.
 - Bring to the user: changes to the contract or the merge order, scope changes, anything risky or irreversible (pushes, merges, deletes) the manager's own autonomy doesn't cover, and anything you are unsure of. The user can always talk to a manager directly; that overrides you.
+- A manager asking for setup: answer from the plan's setup. If the user never gave one, ask the user once and answer every manager that asks with it.
 - When one repo's change lands, tell the managers waiting on it.
 
 ## 5. Watch
