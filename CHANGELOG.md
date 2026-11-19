@@ -2,6 +2,12 @@
 
 All notable changes to this project are documented here. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and versions follow [Semantic Versioning](https://semver.org/).
 
+## [Unreleased]
+
+### Fixed
+- A worker stuck on a dialog (folder trust, a permission prompt) flooded its manager in the herdr app: the watcher reported the same block every poll (75 messages in 24 s), because hc answers "blocked" at once for as long as the dialog is up. It now reports a block once, and again only after it clears and comes back.
+- Messages held while the manager's pane was focused came back as repeated digests ("22 messages while you were busy", then 23, 24…) and empty ones ("0 messages"): every held deliverer read the same unseen messages while the first push was still waiting on a draft. The first deliverer now claims them in one statement; a failed push hands them back to the inbox. A digest folds a repeated line into one with its count (`(×3)`).
+
 ## [0.3.0] - 2026-11-11
 
 ### Added
