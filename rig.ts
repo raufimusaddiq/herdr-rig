@@ -70,6 +70,12 @@ export const HARNESSES: Record<string, any> = {
     interactive: ["opencode", "--auto", "-s", "ses_{sid}", "--prompt"],
     headless: ["opencode", "run", "--auto", "-s", "ses_{sid}", "{model}"],
     resume: ["opencode", "run", "--auto", "-s", "ses_{sid}", "{model}"] },
+  // Antigravity CLI: the prompt is the value of -i/-p (rig appends it last). New sessions can't take an id, so resume
+  // uses --continue. ponytail: --continue picks the newest conversation in this cwd, like codex's --last
+  agy: { kind: "agy", launch: true, model: ["--model", "{model}"], effort: ["--effort", "{effort}"],
+    interactive: ["agy", "--dangerously-skip-permissions", "{model}", "-i"],
+    headless: ["agy", "--dangerously-skip-permissions", "{model}", "-p"],
+    resume: ["agy", "--dangerously-skip-permissions", "--continue", "{model}", "-p"] },
   commandcode: { model: ["-m", "{model}"], effort: ["--effort", "{effort}"],
     interactive: ["commandcode", "-t", "--permission-mode", "yolo", "{model}"],
     headless: ["commandcode", "-t", "--permission-mode", "yolo", "--tools-all", "{model}", "-p"],
@@ -597,7 +603,7 @@ async function main(args: string[]) {
   const ago = (at: string) => { const m = Math.round((Date.now() - Date.parse(at.replace(" ", "T") + "Z")) / 60000);
     return m < 60 ? `${m}m` : m < 1440 ? `${Math.round(m / 60)}h` : `${Math.round(m / 1440)}d`; };
   // harness colors on the terminal board, matching the app board
-  const HUE256: Record<string, number> = { claude: 173, codex: 115, opencode: 111, pi: 141, omp: 205, commandcode: 116 };
+  const HUE256: Record<string, number> = { claude: 173, codex: 115, opencode: 111, pi: 141, omp: 205, agy: 221, commandcode: 116 };
   const waiting = (t: any) => waitingIn(db, t), groupOf = (t: any) => groupIn(db, t);
   // the settings that change how the manager behaves, shown under the board header
   const boardSettings = () => ({ autonomy: get("autonomy"), merge: get("merge"), worktree: get("worktree"), mode: get("mode"),
@@ -1108,8 +1114,11 @@ async function main(args: string[]) {
 // Where each harness looks for user-level skills. Installed as rig-<role>; harness dir must exist unless named explicitly.
 export const SKILL_DIRS: Record<string, string> = {
   claude: ".claude/skills", codex: ".codex/skills", agents: ".agents/skills", opencode: ".config/opencode/skills",
-  pi: ".pi/agent/skills", omp: ".omp/agent/skills", commandcode: ".commandcode/skills",
+  pi: ".pi/agent/skills", omp: ".omp/agent/skills", agy: ".gemini/config/skills", commandcode: ".commandcode/skills",
 };
+// the folder that says a harness is installed, when it isn't the skill dir's first segment
+// (~/.gemini alone is also Gemini CLI's; the skills dir is shared with the Antigravity app)
+const SKILL_ROOTS: Record<string, string> = { agy: ".gemini/antigravity-cli" };
 // a one-line notice when a newer release is out. GitHub is asked at most once a day (1.5s cap, quiet offline);
 // the answer is cached in ~/.rig-update.json. RIG_NO_UPDATE_CHECK=1 turns it off; tests never check.
 async function updateNotice() {
@@ -1136,7 +1145,7 @@ function install(names: string[]) {
   const home = process.env.RIG_HOME ?? homedir();
   // Claude Code reads user skills from $CLAUDE_CONFIG_DIR/skills when that is set (another account or profile)
   const claudeDir = process.env.CLAUDE_CONFIG_DIR;
-  const root = (h: string, rel: string) => h === "claude" && claudeDir ? claudeDir : join(home, rel.split("/")[0]);
+  const root = (h: string, rel: string) => h === "claude" && claudeDir ? claudeDir : join(home, SKILL_ROOTS[h] ?? rel.split("/")[0]);
   const dir = (h: string, rel: string) => h === "claude" && claudeDir ? join(claudeDir, "skills") : join(home, rel);
   for (const [h, rel] of Object.entries(SKILL_DIRS)) {
     if (names.length ? !names.includes(h) : !existsSync(root(h, rel))) continue;
@@ -1185,7 +1194,7 @@ orchestrator (any folder; repos registered in ~/.rig/hub.db by rig new / rig lau
   rig repos [rm <repo>]                        the registered repos and their stories; rm drops one
                                              --story S,S2: only those stories' repos and tickets; S: only that story's repos (rig launch reads Story: from the brief) and tickets
   rig update                                 update rig (and the board mod); installed skills follow by themselves
-  rig install [claude codex agents opencode pi omp commandcode herdr-app]
+  rig install [claude codex agents opencode pi omp agy commandcode herdr-app]
                                              skills as rig-manager/worker/reviewer/orchestrator + the herdr-app board mod (default: all found)
   rig skill [manager|worker|reviewer|orchestrator]  print a skill (for harnesses without skill support)
 harnesses: ${Object.keys(HARNESSES).join(", ")}`;

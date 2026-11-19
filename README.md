@@ -4,7 +4,7 @@
 
 **One manager per repo. One orchestrator across them. Every coding agent on one board.**
 
-Talk to a single session. As a **manager** it writes tickets for one repo, hands them to worker and reviewer agents (Claude Code, Codex, opencode, pi, omp, Command Code), keeps them on track, and merges what passes review. As an **orchestrator** it takes a change that spans several repos, starts a manager in each, and answers them for you. Everything runs in [herdr](https://herdr.dev) panes you can watch and type into, or headless in the background.
+Talk to a single session. As a **manager** it writes tickets for one repo, hands them to worker and reviewer agents (Claude Code, Codex, opencode, pi, omp, Antigravity CLI, Command Code), keeps them on track, and merges what passes review. As an **orchestrator** it takes a change that spans several repos, starts a manager in each, and answers them for you. Everything runs in [herdr](https://herdr.dev) panes you can watch and type into, or headless in the background.
 
 [![test](https://github.com/zanuartri/herdr-rig/actions/workflows/test.yml/badge.svg)](https://github.com/zanuartri/herdr-rig/actions/workflows/test.yml)
 [![license: MIT](https://img.shields.io/badge/license-MIT-f5a524.svg)](LICENSE)
@@ -22,7 +22,7 @@ Running several coding agents at once is easy. Keeping track of them is not. Whi
 
 - **You talk to one session.** The manager turns a request into tickets with a goal, acceptance checks and verify commands, then dispatches them.
 - **Cross-repo changes, one conversation.** An API, its web client and the SDK change together: the orchestrator writes one brief per repo with the shared contract word for word, starts a manager in each, and brings you only the decisions that are yours.
-- **Any harness, any role.** Manager, worker and reviewer can each be Claude Code, Codex, opencode, pi, omp or Command Code, with their own model and effort. Mix them freely, for example a cheap fast worker with a reviewer from a different model family.
+- **Any harness, any role.** Manager, worker and reviewer can each be Claude Code, Codex, opencode, pi, omp, Antigravity CLI (`agy`) or Command Code, with their own model and effort. Mix them freely, for example a cheap fast worker with a reviewer from a different model family.
 - **Isolated by default.** Each ticket gets its own git worktree and `rig/T-n` branch, cut from the branch you are on.
 - **Review that isn't redundant.** The manager only triages the diffstat. One reader, a reviewer or the manager, reads the actual diff.
 - **Nothing to babysit.** Workers report back on their own. A watcher tells the manager when an agent goes idle without reporting, gets blocked, or exits.
@@ -65,6 +65,7 @@ Open your agent in a herdr pane inside a git repo and start the manager skill:
 | Codex | `$rig-manager` |
 | opencode | "use the rig-manager skill" |
 | pi, omp | `/skill:rig-manager` |
+| Antigravity CLI | `/rig-manager` |
 | Command Code | `/rig-manager` |
 | anything else with a shell | "run `rig skill manager` and follow it" |
 
@@ -153,6 +154,7 @@ The orchestrator's state is one file, `~/.rig/hub.db` (`$RIG_HOME/.rig/hub.db`):
 |---|---|---|
 | worker: Claude Code, Codex, opencode, pi, omp, Command Code | ✅ | ✅ |
 | manager: Claude Code, Codex, opencode, pi, omp, Command Code | ✅ | ✅ pi, omp |
+| worker, reviewer, manager: Antigravity CLI | not yet | not yet |
 | watcher (idle / blocked / exited), board, cleanup | ✅ | ✅ |
 | orchestrator: launch, inbox, tell, orchestrator board | ✅ | not yet |
 
@@ -162,6 +164,7 @@ The orchestrator's state is one file, `~/.rig/hub.db` (`$RIG_HOME/.rig/hub.db`):
 
 - **Startup dialogs.** Claude Code, Codex and Command Code ask once to trust each new folder, and every worktree is a new folder. rig keeps the pane open and tells you, and the agent continues once you answer.
 - **Codex as manager** runs commands in a sandbox that can't reach `.git` or herdr. Approve `rig` (and the merge `git` commands) when Codex asks.
+- **Antigravity CLI** can't be given a session id, so a resumed `agy` run continues the newest conversation in its folder. That is the right one with a worktree per ticket; with `--no-worktree` two tickets share a folder.
 - **opencode's background server** can hold a finished worktree folder open on Windows. `rig clean` removes it once it is released.
 - **Watcher.** An agent that pauses for a long time between tool calls can be reported as idle a little early. The manager reads its screen before acting.
 - **Not yet exercised end to end:** `merge pr` (push and `gh pr create`), auto-merge with `autonomy merge`, and the orchestrator on the herdr CLI.
