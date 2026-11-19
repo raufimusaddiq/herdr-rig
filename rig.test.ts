@@ -108,12 +108,15 @@ test("install copies renamed skills only into harnesses that exist", () => {
   expect(require("node:fs").readFileSync(join(home, ".codex/skills/rig-orchestrator/SKILL.md"), "utf8")).toContain("rig skill orchestrator");
 });
 
-test("a block counts once: hc keeps answering blocked while the dialog is up", () => {
-  const blocked = { status: "blocked", turn: 0 };
-  expect(hcSettled("blocked", blocked, 0, false)).toBe(true);
-  expect(hcSettled("blocked", blocked, 0, true)).toBe(false); // already reported: the watcher waits instead of reporting again
-  expect(hcSettled("working", { turn: 0 }, 0, true)).toBe(false);
-  expect(hcSettled("idle", { turn: 1 }, 0, true)).toBe(true); // a new turn still settles
+test("a block or an error counts once: hc keeps answering it while it lasts", () => {
+  const j = { turn: 0 };
+  expect(hcSettled("blocked", j, 0)).toBe(true);
+  expect(hcSettled("blocked", j, 0, "blocked")).toBe(false); // already reported: the watcher waits instead of reporting again
+  expect(hcSettled("error", j, 0)).toBe(true); // a dropped connection
+  expect(hcSettled("error", j, 0, "error")).toBe(false);
+  expect(hcSettled("error", j, 0, "blocked")).toBe(true); // a different trouble is news
+  expect(hcSettled("working", j, 0, "blocked")).toBe(false);
+  expect(hcSettled("idle", { turn: 1 }, 0, "error")).toBe(true); // a new turn still settles
 });
 
 test("held messages are claimed once, and a digest folds a repeated line", () => {

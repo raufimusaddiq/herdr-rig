@@ -272,10 +272,10 @@ const word = (s: any): string | undefined => typeof s === "string" ? s : s?.stat
 // herdr CLI: a pane is gone only when herdr says so; a busy or timed-out herdr call is not a closed pane
 const paneGone = (p: string) => { const r = sh(["herdr", "pane", "get", p]); return !r.ok && /pane_not_found/.test(r.out + r.err); };
 const hcGet = (t: string) => { const r = sh(["hc", "get", t, "--json"]); try { return r.ok ? JSON.parse(r.out) : null; } catch { return null; } };
-/** hc wait answered `j`: does the agent count as settled after turn `turn0`? A block counts unless it was already
- *  reported (`skip`): hc answers "blocked" at once for as long as the dialog is up. */
-export const hcSettled = (st: string | undefined, j: any, turn0: number, skip: boolean) =>
-  (st === "blocked" && !skip) || st === "error" || (j.turn > turn0 && j.reason !== "timeout");
+/** hc wait answered `j`: does the agent count as settled after turn `turn0`? A block or an error (a dropped connection,
+ *  a failed request) counts unless it is the one already reported (`skip`): hc answers it at once for as long as it lasts. */
+export const hcSettled = (st: string | undefined, j: any, turn0: number, skip = "") =>
+  ((st === "blocked" || st === "error") && st !== skip) || (j.turn > turn0 && j.reason !== "timeout");
 /** the messages still held for `too`, marked seen in one statement: a deliverer running beside this one gets none of them */
 export const claimHeld = (db: Database, too: string) =>
   (db.query("UPDATE messages SET seen=1 WHERE too=? AND seen=0 RETURNING *").all(too) as any[]).sort((a, b) => a.id - b.id);
@@ -354,9 +354,9 @@ export const mux = HC ? {
   /** wait until the agent works then settles; returns its status, or null when the terminal is gone */
   // wait until the agent settles after turn `after`; returns [status, turn], or null when the terminal is gone.
   // The caller starts at 0: with the prompt given at launch, turn 1 may begin before anyone looks.
-  // `reported`: the caller already told someone about a block in turn `after`, so that same block doesn't count again
-  // (hc keeps answering "blocked" at once while a dialog is up); one that clears and comes back does
-  async settle(t: string, after = 0, reported = false): Promise<[string, number] | null> {
+  // `reported`: the state ("blocked", "error") the caller already told someone about in turn `after`; it doesn't
+  // count again while it lasts (hc keeps answering it at once), but one that clears and comes back does
+  async settle(t: string, after = 0, reported = ""): Promise<[string, number] | null> {
     const turn0 = after;
     let skip = reported;
     for (;;) {
@@ -368,7 +368,7 @@ export const mux = HC ? {
       if (!j) { if (gone()) return null; await Bun.sleep(3000); continue; }
       if (j.exit_code != null || j.signal != null || gone()) return null;
       const st = word(j.status);
-      if (st !== "blocked") skip = false;
+      if (st !== skip) skip = "";
       if (hcSettled(st, j, turn0, skip)) return [st ?? "idle", j.turn ?? turn0];
       await Bun.sleep(3000); // ponytail: idle before any new turn returns at once; poll 3s until a turn advances
     }
@@ -389,7 +389,7 @@ export const mux = HC ? {
   notify: (title: string, body: string) => sh(["herdr", "notification", "show", title, "--body", body, "--sound", "request"]),
   open: (..._: any[]): string => die("herdr: open is inline in dispatch"),
   // `_reported` is for hc; here a block is one state_change_seq, and the next call waits for a newer one anyway
-  async settle(p: string, after = 0, _reported = false): Promise<[string, number] | null> {
+  async settle(p: string, after = 0, _reported = ""): Promise<[string, number] | null> {
     // state_change_seq is herdr's turn counter, so a turn too short to catch as "working" still counts.
     // First call: an agent already settled at launch doesn't count. Only a gone pane means it exited.
     // ponytail: 3s poll; herdr agent wait has no "after seq" option
@@ -999,15 +999,16 @@ async function main(args: string[]) {
       return;
     }
     case "_watch": { // detached, per pane run: when the agent settles without having reported, tell the manager. herdr does the waiting.
-      let turn = 0, blocked = false, since = db.query("SELECT started FROM runs WHERE id=?").get(Number(pos[0])) as any;
+      let turn = 0, stuck = "", since = db.query("SELECT started FROM runs WHERE id=?").get(Number(pos[0])) as any;
       since = since?.started ?? now();
       for (;;) {
         const r = db.query("SELECT * FROM runs WHERE id=?").get(Number(pos[0])) as any;
         if (r?.status !== "running") return;
-        const res = await mux.settle(r.pane, turn, blocked);
+        const res = await mux.settle(r.pane, turn, stuck);
         const state = res?.[0];
         if (res) turn = res[1];
-        blocked = state === "blocked"; // reported below (or by the worker); one report per block
+        // reported below (or by the worker): one report per block or error, not one per poll while it lasts
+        stuck = state === "blocked" || state === "error" ? state : "";
         if (!state) { // the agent exited or its pane closed. rig close marks the run first; anything else is a surprise
           const now2 = db.query("SELECT status FROM runs WHERE id=?").get(r.id) as any;
           if (now2?.status !== "running") return;
