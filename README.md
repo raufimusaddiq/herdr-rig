@@ -154,7 +154,8 @@ The orchestrator's state is one file, `~/.rig/hub.db` (`$RIG_HOME/.rig/hub.db`):
 |---|---|---|
 | worker: Claude Code, Codex, opencode, pi, omp, Command Code | ✅ | ✅ |
 | manager: Claude Code, Codex, opencode, pi, omp, Command Code | ✅ | ✅ pi, omp |
-| worker, reviewer, manager: Antigravity CLI | not yet | not yet |
+| worker: Antigravity CLI (pane, tab, headless) | ✅ Windows | not yet |
+| manager: Antigravity CLI | not yet | not yet |
 | watcher (idle / blocked / exited), board, cleanup | ✅ | ✅ |
 | orchestrator: launch, inbox, tell, orchestrator board | ✅ | not yet |
 
@@ -162,7 +163,7 @@ The orchestrator's state is one file, `~/.rig/hub.db` (`$RIG_HOME/.rig/hub.db`):
 
 ## Known limitations
 
-- **Startup dialogs.** Claude Code, Codex and Command Code ask once to trust each new folder, and every worktree is a new folder. rig keeps the pane open and tells you, and the agent continues once you answer.
+- **Startup dialogs.** Claude Code, Codex, Antigravity CLI and Command Code ask once to trust each new folder, and every worktree is a new folder. rig keeps the pane open and tells you, and the agent continues once you answer.
 - **Codex as manager** runs commands in a sandbox that can't reach `.git` or herdr. Approve `rig` (and the merge `git` commands) when Codex asks.
 - **Antigravity CLI** can't be given a session id, so a resumed `agy` run continues the newest conversation in its folder. That is the right one with a worktree per ticket; with `--no-worktree` two tickets share a folder.
 - **opencode's background server** can hold a finished worktree folder open on Windows. `rig clean` removes it once it is released.
