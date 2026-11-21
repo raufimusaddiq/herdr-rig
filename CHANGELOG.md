@@ -2,7 +2,7 @@
 
 All notable changes to this project are documented here. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and versions follow [Semantic Versioning](https://semver.org/).
 
-## [Unreleased]
+## [0.4.0] - 2026-11-21
 
 ### Fixed
 - A worker stuck on a dialog (folder trust, a permission prompt) or in an error (a dropped connection, a failed request) flooded its manager in the herdr app: the watcher reported the same state every poll (75 messages in 24 s), because hc answers "blocked" or "error" at once for as long as it lasts. It now reports each once, and again only after it clears and comes back.
