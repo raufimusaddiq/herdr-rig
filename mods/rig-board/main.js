@@ -12,7 +12,7 @@ import { exec, run, theme, props, notify, terminals } from "herdr";
 const BRAND = "#f5a524";
 const LOGO = "mods/rig-board/rig.svg";
 // each harness keeps its own color on the board, so who is working reads at a glance
-const HUE = { claude: "#e08a63", codex: "#3fb489", opencode: "#6f93ff", pi: "#a98bfa", omp: "#f07ab6", commandcode: "#34c6dc" };
+const HUE = { claude: "#e08a63", codex: "#3fb489", opencode: "#6f93ff", pi: "#a98bfa", omp: "#f07ab6", agy: "#e3b341", commandcode: "#34c6dc" };
 const EFFORT = { minimal: 1, low: 1, medium: 2, high: 3, xhigh: 4, max: 4 };
 const ICON = (name) => `mods/workspace-chrome/${name}.svg`;
 // what you watch comes first: Working is never pushed off screen by a long Ready list
