@@ -53,7 +53,7 @@ A worker only knows what is in the ticket, so put the user's decisions there and
 
 ## 2. Dispatch
 
-`rig dispatch T-3 ["note"] [--harness claude|codex|omp|pi|opencode|commandcode] [--model m] [--effort low|medium|high|…] [--mode pane|tab|headless] [--no-worktree]`
+`rig dispatch T-3 ["note"] [--harness claude|codex|omp|pi|opencode|agy|commandcode] [--model m] [--effort low|medium|high|…] [--mode pane|tab|headless] [--no-worktree]`
 
 - Defaults come from `rig get`. Change them with `rig set worker.harness codex`, `rig set reviewer.model …`, `rig set mode tab`. When the user names a harness or model for a ticket, pass it as a flag.
 - **pane/tab** opens a live session in herdr that the user can watch and type into. **headless** runs in the background, and you get a message automatically when it exits.

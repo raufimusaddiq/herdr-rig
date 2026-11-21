@@ -34,6 +34,17 @@ test("argv expands model and sid, drops model when unset", () => {
   expect(argv(HARNESSES.omp, "interactive", "", "S")).toEqual(["omp"]);
 });
 
+test("agy: the prompt is the value of -i / -p, resume continues the folder's newest conversation", () => {
+  const h = HARNESSES.agy;
+  expect(h.kind).toBe("agy"); // herdr's agent kind, so `herdr agent start --kind agy` launches it
+  expect(argv(h, "interactive", "gemini-3.8-flash", "S", "go", "high")).toEqual(
+    ["agy", "--dangerously-skip-permissions", "--model", "gemini-3.8-flash", "--effort", "high", "-i", "go"]);
+  expect(argv(h, "headless", "", "S", "go")).toEqual(["agy", "--dangerously-skip-permissions", "-p", "go"]);
+  expect(argv(h, "resume", "m", "S", "more")).toEqual(["agy", "--dangerously-skip-permissions", "--continue", "--model", "m", "-p", "more"]);
+  const { prompt, cmd } = launchCmd(h, "/b.md", "", "", "S");
+  expect(cmd).toEqual(["agy", "--dangerously-skip-permissions", "-i", prompt]); // an orchestrator-started manager gets its prompt at launch
+});
+
 test("ticket, messages and a headless run end to end", async () => {
   const repo = tmp("rig-");
   Bun.spawnSync(["git", "init", "-q", repo]);
@@ -132,6 +143,17 @@ test("held messages are claimed once, and a digest folds a repeated line", () =>
     + "- T-2/worker on T-2: [watch] worker run #2 is blocked without reporting. Screen: (×3)\n"
     + "- T-2/worker on T-2: done\n(rig show <ticket> for the full text)");
   expect(claimHeld(db, "manager:t9").length).toBe(1);
+});
+
+test("install: agy skills go to ~/.gemini/config/skills, and only when the Antigravity CLI is there", () => {
+  const home = tmp("rig-home-");
+  mkdirSync(join(home, ".gemini"), { recursive: true }); // Gemini CLI alone
+  const run = (args: string[]) => Bun.spawnSync(["bun", join(import.meta.dir, "rig.ts"), "install", ...args],
+    { env: { ...process.env, RIG_HOME: home, CLAUDE_CONFIG_DIR: "" } }).stdout.toString();
+  expect(run([])).not.toContain("agy:");
+  mkdirSync(join(home, ".gemini/antigravity-cli"), { recursive: true });
+  expect(run([])).toContain("agy:");
+  expect(require("node:fs").readFileSync(join(home, ".gemini/config/skills/rig-reviewer/SKILL.md"), "utf8")).toContain("name: rig-reviewer");
 });
 
 test("install puts Claude skills under CLAUDE_CONFIG_DIR when it is set", () => {
